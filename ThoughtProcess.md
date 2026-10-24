@@ -8,7 +8,7 @@ We first ask ourselves what exactly is the question and what are we trying to ac
 
 
 
-## Correcting my first draft
+## Correcting my first draft (please note that I used claude to critique/validate my first approach and the following plan has been made by claude to explain to me personally where to go about with this project)
 
 My first pass got a few things wrong, so before planning I'm noting them:
 
