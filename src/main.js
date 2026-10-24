@@ -20,6 +20,7 @@ import {
   initGlasses3D, resizeGlasses3D, updatePose, renderGlasses3D, setDesign, setOccluderVisible,
   setPitchCorrection, setOccluderHeight, OCCLUDER_DEFAULT_Y_MM, PITCH_DEFAULT_DEG,
 } from './glasses3d.js';
+import { OneEuroFilter } from './oneEuro.js';
 
 // -----------------------------------------------------------------------------
 // Where the runtime files come from
@@ -86,6 +87,84 @@ for (const g of Object.values(GLASSES)) {
 const LENS_TO_EYE_CORNER_RATIO = 0.7;
 
 // -----------------------------------------------------------------------------
+// Smoothing (step 4)
+// -----------------------------------------------------------------------------
+// We smooth only the landmarks the glasses actually use, not the final pose.
+// Smoothing rotations directly is awkward (angles wrap around 359° → 0°, and
+// a blended rotation has to be re-normalised). Smoothing the points and then
+// building the pose from them as before avoids both, and the 2D mode gets
+// smoothing for free since it uses the same eye corners.
+const SMOOTHED_POINTS = [33, 263, 10, 152]; // eye corners, forehead, chin
+
+// Shared by every filter, so the sliders tune all of them at once.
+// Units: landmarks are 0-1 fractions of the frame, so speeds are "frame
+// widths per second". A head turn is roughly 0.5-1, which is why beta is
+// much bigger than the ~0.007 in the paper (that was in pixels per second).
+// Defaults tuned live on camera: at minCutoff 1 Hz the glasses visibly dragged
+// behind the face (~160 ms of delay when still, since delay ≈ 1/(2π·cutoff)),
+// while raw tracking was already fairly steady. 3 Hz (~50 ms) removed the drag
+// with only a very slight jitter left. Light smoothing also protects the
+// <100 ms end-to-end latency budget.
+// shortcut: tuned in one lighting setup on one face; re-check in dim light,
+// where webcam noise (and so jitter) is higher.
+const SMOOTHING = { minCutoff: 3, beta: 30, dCutoff: 1.0 };
+
+// One filter per number: 4 points × (x, y, z) = 12 filters.
+const filters = {};
+for (const i of SMOOTHED_POINTS) {
+  filters[i] = { x: new OneEuroFilter(SMOOTHING), y: new OneEuroFilter(SMOOTHING), z: new OneEuroFilter(SMOOTHING) };
+}
+
+// Smoothed copies of those points live here, at the same indices as in the
+// raw landmark array, so updatePose/drawGlasses can read face[33] etc. from
+// either one without knowing whether it's smoothed. Reused every frame.
+const smoothFace = [];
+for (const i of SMOOTHED_POINTS) smoothFace[i] = { x: 0, y: 0, z: 0 };
+
+function resetFilters() {
+  for (const f of Object.values(filters)) { f.x.reset(); f.y.reset(); f.z.reset(); }
+}
+
+// Returns the landmarks to place the glasses with: smoothed, or raw when the
+// smoothing checkbox is off (for comparing the two live).
+function smoothLandmarks(face, now) {
+  if (!face || !smoothing.checked) {
+    // No face (or smoothing off): forget history so the next smoothed frame
+    // starts from the real position instead of gliding from an old one.
+    resetFilters();
+    return face;
+  }
+  for (const i of SMOOTHED_POINTS) {
+    smoothFace[i].x = filters[i].x.filter(face[i].x, now);
+    smoothFace[i].y = filters[i].y.filter(face[i].y, now);
+    smoothFace[i].z = filters[i].z.filter(face[i].z, now);
+  }
+  return smoothFace;
+}
+
+// -----------------------------------------------------------------------------
+// Jitter measurement
+// -----------------------------------------------------------------------------
+// How much the glasses' centre (midpoint of the eye corners) wobbles, in video
+// pixels: the standard deviation of its position over the last second. Only
+// meaningful while you hold your head still, because real movement also counts
+// as "spread". Comparing raw vs smoothed gives the before/after number for the
+// write-up ("jitter reduced from X px to Y px").
+function eyeCentre(face, w, h) {
+  return { x: (face[33].x + face[263].x) / 2 * w, y: (face[33].y + face[263].y) / 2 * h };
+}
+
+// 2D standard deviation: sqrt(variance in x + variance in y). Roughly "the
+// typical distance of a sample from the average position".
+function spread(samples) {
+  if (samples.length < 2) return null;
+  const mx = samples.reduce((s, p) => s + p.x, 0) / samples.length;
+  const my = samples.reduce((s, p) => s + p.y, 0) / samples.length;
+  const v = samples.reduce((s, p) => s + (p.x - mx) ** 2 + (p.y - my) ** 2, 0) / samples.length;
+  return Math.sqrt(v);
+}
+
+// -----------------------------------------------------------------------------
 // Grab the HTML elements once, up front
 // -----------------------------------------------------------------------------
 const video = document.getElementById('video');
@@ -99,6 +178,9 @@ const showLandmarks = document.getElementById('showLandmarks');
 const use3D = document.getElementById('use3D');
 const showOccluder = document.getElementById('showOccluder');
 const statRender = document.getElementById('statRender');
+const smoothing = document.getElementById('smoothing');
+const statJitterRaw = document.getElementById('statJitterRaw');
+const statJitterSmooth = document.getElementById('statJitterSmooth');
 const statRes = document.getElementById('statRes');
 const statFps = document.getElementById('statFps');
 const statInference = document.getElementById('statInference');
@@ -244,7 +326,8 @@ function stopCamera() {
   placeholder.hidden = false;
   cameraBtn.textContent = 'Start camera';
   statRes.textContent = statFps.textContent = statInference.textContent = statFace.textContent = '–';
-  statRender.textContent = '–';
+  statRender.textContent = statJitterRaw.textContent = statJitterSmooth.textContent = '–';
+  resetFilters(); // so the next start doesn't glide from where the face was
   setStatus('');
 }
 
@@ -268,6 +351,8 @@ function startFrameLoop() {
   let frames = 0;
   let inferenceTotal = 0;
   let renderTotal = 0;
+  let rawCentres = [];    // eye-centre positions this second, raw
+  let smoothCentres = []; // ... and smoothed
   let windowStart = performance.now();
 
   // `now` is a high-resolution timestamp (ms) for this frame. It always
@@ -286,6 +371,17 @@ function startFrameLoop() {
     const face = result.faceLandmarks[0]; // undefined when no face is visible
     statFace.textContent = face ? 'yes' : 'no';
 
+    // Smoothed landmarks for placing the glasses (raw `face` is still used for
+    // the debug dots, so you can see the raw jitter vs the steady glasses).
+    const pose = smoothLandmarks(face, now);
+
+    // Record raw and smoothed centres for the jitter stat. When smoothing is
+    // off, both are the raw position.
+    if (face) {
+      rawCentres.push(eyeCentre(face, canvas.width, canvas.height));
+      smoothCentres.push(eyeCentre(pose, canvas.width, canvas.height));
+    }
+
     // --- 2. Draw ------------------------------------------------------------
     // Timed separately from inference so we can see what rendering costs.
     // (This is CPU time to issue the drawing; the GPU finishes asynchronously.)
@@ -294,14 +390,14 @@ function startFrameLoop() {
     // 3D layer: move the glasses to the head pose and draw. When 3D is off,
     // updatePose(null) hides them so the 3D layer is empty.
     if (!use3D.disabled) {
-      updatePose(use3D.checked ? face : null, canvas.width, canvas.height);
+      updatePose(use3D.checked ? pose : null, canvas.width, canvas.height);
       renderGlasses3D();
     }
 
     // 2D layer: wipe last frame, then the 2D glasses (only in 2D mode), then
     // the debug dots on top so they stay visible for checking alignment.
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    if (face && !use3D.checked) drawGlasses(face);
+    if (face && !use3D.checked) drawGlasses(pose);
     if (face && showLandmarks.checked) drawLandmarks(face);
     renderTotal += performance.now() - t1;
 
@@ -312,6 +408,12 @@ function startFrameLoop() {
       statFps.textContent = (frames * 1000 / elapsed).toFixed(1);
       statInference.textContent = `${(inferenceTotal / frames).toFixed(1)} ms`;
       statRender.textContent = `${(renderTotal / frames).toFixed(1)} ms`;
+      const jr = spread(rawCentres);
+      const js = spread(smoothCentres);
+      statJitterRaw.textContent = jr === null ? '–' : `${jr.toFixed(2)} px`;
+      statJitterSmooth.textContent = js === null ? '–' : `${js.toFixed(2)} px`;
+      rawCentres = [];
+      smoothCentres = [];
       frames = 0;
       inferenceTotal = 0;
       renderTotal = 0;
@@ -457,6 +559,22 @@ pitch.addEventListener('input', () => {
   setPitchCorrection(Number(pitch.value));
   pitchOut.textContent = `${pitch.value}°`;
 });
+
+// Smoothing sliders write straight into the shared SMOOTHING object that every
+// filter reads, so changes apply on the very next frame.
+const minCutoff = document.getElementById('minCutoff');
+const minCutoffOut = document.getElementById('minCutoffOut');
+const beta = document.getElementById('beta');
+const betaOut = document.getElementById('betaOut');
+minCutoff.value = SMOOTHING.minCutoff;
+beta.value = SMOOTHING.beta;
+const showSmoothing = () => {
+  minCutoffOut.textContent = `${SMOOTHING.minCutoff} Hz`;
+  betaOut.textContent = `${SMOOTHING.beta}`;
+};
+showSmoothing();
+minCutoff.addEventListener('input', () => { SMOOTHING.minCutoff = Number(minCutoff.value); showSmoothing(); });
+beta.addEventListener('input', () => { SMOOTHING.beta = Number(beta.value); showSmoothing(); });
 
 const occHeight = document.getElementById('occHeight');
 const occHeightOut = document.getElementById('occHeightOut');
