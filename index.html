@@ -34,6 +34,7 @@
 
         <h2>Debug</h2>
         <label class="toggle"><input type="checkbox" id="use3D" checked /> 3D glasses (off = 2D baseline)</label>
+        <label class="toggle"><input type="checkbox" id="matchLighting" checked /> Match room lighting</label>
         <label class="toggle"><input type="checkbox" id="smoothing" checked /> Smoothing (One Euro)</label>
         <label class="slider">Min cutoff <output id="minCutoffOut"></output>
           <input type="range" id="minCutoff" min="0.05" max="5" step="0.05" />
@@ -56,6 +57,7 @@
           <dt>Camera FPS</dt><dd id="statFps">–</dd>
           <dt>Inference</dt><dd id="statInference">–</dd>
           <dt>Render</dt><dd id="statRender">–</dd>
+          <dt>Lighting</dt><dd id="statLight">–</dd>
           <dt>Jitter raw</dt><dd id="statJitterRaw">–</dd>
           <dt>Jitter smoothed</dt><dd id="statJitterSmooth">–</dd>
           <dt>Face</dt><dd id="statFace">–</dd>

@@ -18,9 +18,10 @@
 import { FilesetResolver, FaceLandmarker } from '@mediapipe/tasks-vision';
 import {
   initGlasses3D, resizeGlasses3D, updatePose, renderGlasses3D, setDesign, setOccluderVisible,
-  setPitchCorrection, setOccluderHeight, OCCLUDER_DEFAULT_Y_MM, PITCH_DEFAULT_DEG,
+  setPitchCorrection, setOccluderHeight, OCCLUDER_DEFAULT_Y_MM, PITCH_DEFAULT_DEG, setLighting,
 } from './glasses3d.js';
 import { OneEuroFilter } from './oneEuro.js';
+import { estimateLighting } from './lighting.js';
 
 // -----------------------------------------------------------------------------
 // Where the runtime files come from
@@ -179,6 +180,8 @@ const use3D = document.getElementById('use3D');
 const showOccluder = document.getElementById('showOccluder');
 const statRender = document.getElementById('statRender');
 const smoothing = document.getElementById('smoothing');
+const matchLighting = document.getElementById('matchLighting');
+const statLight = document.getElementById('statLight');
 const statJitterRaw = document.getElementById('statJitterRaw');
 const statJitterSmooth = document.getElementById('statJitterSmooth');
 const statRes = document.getElementById('statRes');
@@ -326,7 +329,7 @@ function stopCamera() {
   placeholder.hidden = false;
   cameraBtn.textContent = 'Start camera';
   statRes.textContent = statFps.textContent = statInference.textContent = statFace.textContent = '–';
-  statRender.textContent = statJitterRaw.textContent = statJitterSmooth.textContent = '–';
+  statRender.textContent = statJitterRaw.textContent = statJitterSmooth.textContent = statLight.textContent = '–';
   resetFilters(); // so the next start doesn't glide from where the face was
   setStatus('');
 }
@@ -390,6 +393,15 @@ function startFrameLoop() {
     // 3D layer: move the glasses to the head pose and draw. When 3D is off,
     // updatePose(null) hides them so the 3D layer is empty.
     if (!use3D.disabled) {
+      // Room lighting: estimateLighting only does work ~7 times a second and
+      // returns null in between, so most frames this costs nothing.
+      if (face && use3D.checked && matchLighting.checked) {
+        const light = estimateLighting(video, face, now);
+        if (light) {
+          setLighting(light);
+          statLight.textContent = describeLight(light);
+        }
+      }
       updatePose(use3D.checked ? pose : null, canvas.width, canvas.height);
       renderGlasses3D();
     }
@@ -424,6 +436,14 @@ function startFrameLoop() {
     frameHandle = video.requestVideoFrameCallback(onFrame);
   };
   frameHandle = video.requestVideoFrameCallback(onFrame);
+}
+
+// Short human-readable summary of the lighting estimate for the stats panel,
+// e.g. "0.85× warm, from R". Thresholds are just for the label.
+function describeLight({ brightness, tint, dirX }) {
+  const tone = tint.r - tint.b > 0.06 ? 'warm' : tint.b - tint.r > 0.06 ? 'cool' : 'neutral';
+  const side = dirX > 0.05 ? ', from R' : dirX < -0.05 ? ', from L' : '';
+  return `${brightness.toFixed(2)}× ${tone}${side}`;
 }
 
 // -----------------------------------------------------------------------------
@@ -543,6 +563,14 @@ document.getElementById('glassesList').addEventListener('click', (e) => {
   selectedGlasses = btn.dataset.id;
   statGlasses.textContent = selectedGlasses;
   if (!use3D.disabled) setDesign(selectedGlasses); // show the matching 3D model
+});
+
+// Turning room-matching off restores the fixed default lighting, so the two
+// can be compared side by side.
+matchLighting.addEventListener('change', () => {
+  if (use3D.disabled || matchLighting.checked) return;
+  setLighting(null);
+  statLight.textContent = 'fixed';
 });
 
 // Debug: show the invisible head occluder as a green wireframe to check its fit.

@@ -40,6 +40,8 @@ export const PITCH_DEFAULT_DEG = -2;      // see pitchCorrection below
 let renderer, scene, camera;
 let head;         // group that follows the head; everything below is its child
 let occluder;     // invisible head shape that hides the arms behind the head
+let keyLight;     // the main directional light, adjusted by setLighting()
+const KEY_LIGHT_INTENSITY = 1.2; // its brightness in a "normal" room
 const designs = {}; // id → THREE.Group for each glasses model
 
 // Reusable vectors/matrix. Creating new objects 60 times a second makes the
@@ -84,10 +86,11 @@ export function initGlasses3D(canvas) {
   scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
   pmrem.dispose();
 
-  // One soft light from above-front, like a ceiling light, for a highlight on top of the frame.
-  const light = new THREE.DirectionalLight(0xffffff, 1.2);
-  light.position.set(0, 1, 1);
-  scene.add(light);
+  // One soft light from above-front, like a ceiling light, for a highlight on
+  // top of the frame. setLighting() moves, dims and tints it to match the room.
+  keyLight = new THREE.DirectionalLight(0xffffff, KEY_LIGHT_INTENSITY);
+  keyLight.position.set(0, 1, 1);
+  scene.add(keyLight);
 
   // Orthographic camera: no perspective, so 1 unit = 1 video pixel everywhere.
   // Why not a perspective camera with MediaPipe's head-pose matrix? That needs
@@ -133,6 +136,25 @@ export function resizeGlasses3D(width, height) {
 
 export function setDesign(id) {
   for (const [key, g] of Object.entries(designs)) g.visible = key === id;
+}
+
+// Match the virtual lighting to the room (estimate from src/lighting.js).
+// Pass null to go back to the fixed default lighting.
+//   brightness: 1 = normal room → scales both the reflections and the key light
+//   tint:       colour multipliers (~0.8-1.2) → colours the key light
+//   dirX/dirY:  -1..1, which side of the face is brighter → moves the key light there
+// The reflection map stays neutral in colour (re-tinting it would mean
+// rebuilding it), so metal frames pick up the tint less than plastic ones.
+export function setLighting(est) {
+  const e = est ?? { brightness: 1, tint: { r: 1, g: 1, b: 1 }, dirX: 0, dirY: 0 };
+  scene.environmentIntensity = e.brightness;
+  keyLight.intensity = KEY_LIGHT_INTENSITY * e.brightness;
+  keyLight.color.setRGB(e.tint.r, e.tint.g, e.tint.b);
+  // A directional light shines from its position toward the origin. x: left/
+  // right of the face (×2 to exaggerate a little, since the measured difference
+  // is subtle). y: stays mostly overhead, nudged by top/bottom brightness.
+  // z: always in front, since a light behind the head wouldn't light the frame front.
+  keyLight.position.set(e.dirX * 2, 1 + e.dirY, 1);
 }
 
 // Debug sliders for tuning the head fit (see pitchCorrection and buildOccluder).

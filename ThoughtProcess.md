@@ -60,6 +60,20 @@ Apply a One Euro filter to the position/rotation (or to the key landmarks) befor
 
 *Why:* raw per-frame predictions jitter. A plain moving average removes jitter but adds lag. The One Euro filter smooths heavily when the head is still and lightly when it moves fast, so it fixes jitter without hurting responsiveness. It's a standard choice for AR tracking.
 
+*Note from testing (steps 4–5): smoothing may be doing more harm than good.*
+
+- **What happened:**
+  - Raw MediaPipe tracking turned out to be fairly steady on my setup.
+  - At min cutoff 1 Hz the glasses visibly dragged across my face when I moved.
+  - At 3 Hz the drag was smaller, with only very slight jitter, so 3 Hz / beta 30 is the current default.
+  - Even with beta pushed to 50, there's still a noticeable drag.
+- **Likely cause:** the filter's speed estimate is itself smoothed (`dCutoff` = 1 Hz), so at the start of every movement it still thinks the head is "slow" and smooths heavily for a moment. Beta can't help until the speed estimate catches up. Any smoothing also adds to the <100 ms latency budget.
+- **To decide later (not changed yet):**
+  - Measure raw vs smoothed jitter (the stats panel) in normal and dim light.
+  - If raw jitter is small even in dim light, turn smoothing **off by default** and keep the toggle.
+  - Otherwise, try a higher `dCutoff` (so it reacts faster to the start of movement) or a higher min cutoff.
+  - Either way, the write-up should explain the choice with the measured numbers.
+
 ### 5. Rendering: Three.js with 3D glasses models
 
 - Webcam `<video>` as the background, mirrored (selfie view). The 3D scene is mirrored the same way so they stay consistent.
