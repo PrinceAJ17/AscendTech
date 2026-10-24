@@ -1,0 +1,12 @@
+<!-- Round frames. Lens centres at (78,50) and (202,50): src/main.js relies on these -->
+<svg xmlns="http://www.w3.org/2000/svg" width="280" height="100" viewBox="0 0 280 100">
+  <g fill="rgba(180,210,230,0.15)" stroke="#1a1a1a" stroke-width="6">
+    <circle cx="78" cy="50" r="44"/>
+    <circle cx="202" cy="50" r="44"/>
+  </g>
+  <g fill="none" stroke="#1a1a1a" stroke-width="6" stroke-linecap="round">
+    <path d="M120 40 Q140 26 160 40"/>
+    <path d="M34 42 L6 36"/>
+    <path d="M246 42 L274 36"/>
+  </g>
+</svg>

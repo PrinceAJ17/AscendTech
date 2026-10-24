@@ -1,0 +1,12 @@
+<!-- Rectangular frames. Lens centres at (78,50) and (202,50): src/main.js relies on these -->
+<svg xmlns="http://www.w3.org/2000/svg" width="280" height="100" viewBox="0 0 280 100">
+  <g fill="rgba(180,210,230,0.15)" stroke="#222" stroke-width="7">
+    <rect x="26" y="20" width="104" height="60" rx="10"/>
+    <rect x="150" y="20" width="104" height="60" rx="10"/>
+  </g>
+  <g fill="none" stroke="#222" stroke-width="7" stroke-linecap="round">
+    <path d="M130 40 Q140 34 150 40"/>
+    <path d="M26 32 L4 28"/>
+    <path d="M254 32 L276 28"/>
+  </g>
+</svg>

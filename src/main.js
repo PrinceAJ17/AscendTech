@@ -1,10 +1,11 @@
 // =============================================================================
-// Glasses Try-On — step 1: webcam + MediaPipe face landmarks
+// Glasses Try-On — step 2: webcam + face landmarks + 2D glasses overlay
 //
 // Pipeline for every camera frame:
-//   webcam frame → MediaPipe Face Landmarker → 478 landmarks → draw on canvas
+//   webcam frame → MediaPipe Face Landmarker → 478 landmarks
+//     → 2D placement math (position, rotation, scale) → draw glasses image on canvas
 //
-// Later steps will replace "draw dots" with "place and render glasses".
+// Step 3 will swap the flat image for a 3D model rendered with Three.js.
 // =============================================================================
 
 // FilesetResolver loads MediaPipe's WebAssembly runtime (the compiled C++ that
@@ -42,6 +43,40 @@ const KEY_POINTS = {
 };
 
 // -----------------------------------------------------------------------------
+// Glasses images (step 2: flat 2D overlay)
+// -----------------------------------------------------------------------------
+// Each design is an SVG in public/glasses/. To place an image on a face we need
+// to know where its lens centres are, in the image's own pixel coordinates.
+// All three SVGs were drawn on a 280×100 canvas with lens centres at the same
+// spots, so they share these numbers. A new design must either use the same
+// layout or carry its own lensLeft/lensRight values.
+const LENS_LEFT = { x: 78, y: 50 };   // lens centre on the image's left side
+const LENS_RIGHT = { x: 202, y: 50 }; // lens centre on the image's right side
+
+const GLASSES = {
+  round: { src: '/glasses/round.svg' },
+  rectangle: { src: '/glasses/rectangle.svg' },
+  aviator: { src: '/glasses/aviator.svg' },
+};
+
+// Load every image once at startup and keep the decoded Image on its entry, so
+// switching glasses is instant (no download mid-tracking).
+for (const g of Object.values(GLASSES)) {
+  g.img = new Image();
+  g.img.src = g.src;
+}
+
+// How far apart the lens centres are compared with the outer eye corners.
+// Why not just put the lenses on the irises (468/473)? Because irises move when
+// you look sideways, and the glasses would slide around with your gaze. Eye
+// corners are fixed to the skull, so we measure those and convert:
+//   typical adult pupil distance ≈ 63 mm, outer eye-corner distance ≈ 90 mm
+//   → lens centres sit at ~0.7× the eye-corner distance.
+// shortcut: one average ratio for everyone; tune by eye, or use per-face iris
+// distance measured while looking straight ahead if fit looks off.
+const LENS_TO_EYE_CORNER_RATIO = 0.7;
+
+// -----------------------------------------------------------------------------
 // Grab the HTML elements once, up front
 // -----------------------------------------------------------------------------
 const video = document.getElementById('video');
@@ -65,6 +100,7 @@ const statGlasses = document.getElementById('statGlasses');
 let stream = null;      // the MediaStream from the webcam (null = camera off)
 let frameHandle = null; // id of the pending per-frame callback, so we can cancel it
 let landmarker = null;  // the FaceLandmarker, created once and reused
+let selectedGlasses = 'round'; // key into GLASSES, changed by the picker buttons
 
 function setStatus(text, isError = false) {
   statusEl.textContent = text;
@@ -222,7 +258,10 @@ function startFrameLoop() {
     statFace.textContent = face ? 'yes' : 'no';
 
     // --- 2. Draw ------------------------------------------------------------
+    // Wipe last frame's drawing, then glasses first and debug dots on top of
+    // them, so the dots stay visible for checking alignment.
     ctx.clearRect(0, 0, canvas.width, canvas.height);
+    if (face) drawGlasses(face);
     if (face && showLandmarks.checked) drawLandmarks(face);
 
     // --- 3. Update stats once per second ------------------------------------
@@ -240,6 +279,71 @@ function startFrameLoop() {
     frameHandle = video.requestVideoFrameCallback(onFrame);
   };
   frameHandle = video.requestVideoFrameCallback(onFrame);
+}
+
+// -----------------------------------------------------------------------------
+// 2D glasses placement
+// -----------------------------------------------------------------------------
+// We need three things to put a flat image on a face:
+//   1. WHERE  → translation: the point between the eyes
+//   2. WHICH WAY → rotation (roll): the angle of the line through the eyes
+//   3. HOW BIG → scale: eye distance on the face ÷ lens distance in the image
+// All three come from just two landmarks: the outer eye corners (33 and 263).
+//
+// Known limit of 2D: it can follow moving, tilting (roll) and getting closer/
+// further, but NOT turning the head (yaw) or nodding (pitch). A flat image
+// can only rotate within the screen plane; when you turn, it just shrinks
+// evenly instead of the far lens getting smaller. Step 3 (3D) fixes this.
+function drawGlasses(face) {
+  const glasses = GLASSES[selectedGlasses];
+  // complete = finished loading; naturalWidth 0 = it failed to load
+  if (!glasses.img.complete || glasses.img.naturalWidth === 0) return;
+
+  const w = canvas.width;
+  const h = canvas.height;
+
+  // Eye corners in canvas pixels (landmarks come as 0-1 fractions of the frame).
+  // In the raw (un-mirrored) camera image, the person's right eye (33) is on
+  // the LEFT side, so a = left of the image, b = right: same order as the
+  // image's LENS_LEFT / LENS_RIGHT, which means no flipping is needed.
+  const a = { x: face[33].x * w, y: face[33].y * h };
+  const b = { x: face[263].x * w, y: face[263].y * h };
+
+  // 1. WHERE: the midpoint between the eye corners. This sits on the eye line,
+  // so lens centres line up with the eyes vertically. (Landmark 168 sits a bit
+  // above the eye line, closer to the brow, so we keep it for reference only.)
+  const centre = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+
+  // 2. WHICH WAY: angle of the eye line. atan2(dy, dx) returns the angle of the
+  // vector a→b in radians; 0 = level, positive = tilted clockwise on canvas.
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const angle = Math.atan2(dy, dx);
+
+  // 3. HOW BIG: Pythagoras gives the eye-corner distance in pixels. Convert it to
+  // where the lens centres should be (×0.7, see LENS_TO_EYE_CORNER_RATIO), then
+  // divide by the lens distance in the image to get the scale factor.
+  const eyeCornerDist = Math.hypot(dx, dy);
+  const targetLensDist = eyeCornerDist * LENS_TO_EYE_CORNER_RATIO;
+  const imageLensDist = LENS_RIGHT.x - LENS_LEFT.x;
+  const scale = targetLensDist / imageLensDist;
+
+  // The point in the image that should land on `centre`: halfway between lenses.
+  const imgCentre = { x: (LENS_LEFT.x + LENS_RIGHT.x) / 2, y: (LENS_LEFT.y + LENS_RIGHT.y) / 2 };
+
+  // Canvas transforms apply in reverse order of how they're written, so read
+  // these bottom-up for what happens to each image pixel:
+  //   drawImage at -imgCentre → image's lens midpoint now sits at the origin
+  //   scale   → resize around that point
+  //   rotate  → tilt around that point
+  //   translate → move that point onto the face's eye-line centre
+  // save/restore keeps these transforms from leaking into later drawing.
+  ctx.save();
+  ctx.translate(centre.x, centre.y);
+  ctx.rotate(angle);
+  ctx.scale(scale, scale);
+  ctx.drawImage(glasses.img, -imgCentre.x, -imgCentre.y);
+  ctx.restore();
 }
 
 // -----------------------------------------------------------------------------
@@ -283,11 +387,14 @@ function drawLandmarks(face) {
 // -----------------------------------------------------------------------------
 cameraBtn.addEventListener('click', () => (stream ? stopCamera() : startCamera()));
 
-// Glasses picker: only highlights the choice for now; step 2 will load the
-// matching glasses image/model. One listener on the container handles all buttons.
+// Glasses picker. Each button's data-id matches a key in GLASSES. One listener
+// on the container handles all buttons ("event delegation"). The next frame
+// drawn picks up the new selection automatically.
 document.getElementById('glassesList').addEventListener('click', (e) => {
   const btn = e.target.closest('button');
   if (!btn) return;
+  // aria-pressed tells screen readers (and our CSS) which button is active.
   for (const b of e.currentTarget.children) b.setAttribute('aria-pressed', b === btn);
-  statGlasses.textContent = btn.dataset.id;
+  selectedGlasses = btn.dataset.id;
+  statGlasses.textContent = selectedGlasses;
 });
