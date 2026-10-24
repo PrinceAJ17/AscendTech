@@ -62,6 +62,9 @@ main {
   place-items: center;
   color: var(--muted);
 }
+/* `display: grid` above would otherwise override the hidden attribute, leaving
+   "Camera is off" drawn over the live video */
+.placeholder[hidden] { display: none; }
 
 .panel {
   background: var(--panel);
@@ -106,6 +109,8 @@ button:disabled { opacity: 0.6; cursor: wait; }
   padding: 6px 8px;
 }
 #recordBtn { width: 100%; }
+.camera-info { margin-top: 8px; font-size: 0.9rem; }
+.camera-info summary { cursor: pointer; color: var(--muted); }
 .summary {
   max-height: 260px;
   overflow: auto;

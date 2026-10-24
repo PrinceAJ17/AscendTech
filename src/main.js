@@ -108,8 +108,13 @@ const SMOOTHED_POINTS = [33, 263, 10, 152]; // eye corners, forehead, chin
 // while raw tracking was already fairly steady. 3 Hz (~50 ms) removed the drag
 // with only a very slight jitter left. Light smoothing also protects the
 // <100 ms end-to-end latency budget.
-// shortcut: tuned in one lighting setup on one face; re-check in dim light,
-// where webcam noise (and so jitter) is higher.
+//
+// Smoothing is OFF by default (the checkbox in index.html starts unticked).
+// Measurements showed raw frame-to-frame jitter of only ~0.24 px in normal
+// light and ~0.36 px in dim light (invisible), while smoothing made the glasses
+// lag ~3-4 px behind the face during movement (visible). These values are kept
+// for when it's switched on, e.g. on a noisier camera.
+// shortcut: measured on one webcam and one face; re-check on a cheaper webcam.
 const SMOOTHING = { minCutoff: 3, beta: 30, dCutoff: 1.0 };
 
 // One filter per number: 4 points × (x, y, z) = 12 filters.
@@ -190,6 +195,7 @@ const scenarioInput = document.getElementById('scenario');
 const durationSelect = document.getElementById('duration');
 const recordStatus = document.getElementById('recordStatus');
 const summaryOut = document.getElementById('summary');
+const cameraCaps = document.getElementById('cameraCaps');
 const statJitterRaw = document.getElementById('statJitterRaw');
 const statJitterSmooth = document.getElementById('statJitterSmooth');
 const statRes = document.getElementById('statRes');
@@ -203,6 +209,8 @@ const statGlasses = document.getElementById('statGlasses');
 // App state
 // -----------------------------------------------------------------------------
 let stream = null;      // the MediaStream from the webcam (null = camera off)
+let cameraFps = null;   // frame rate the camera is configured for (from getSettings)
+let cameraInfo = null;  // what the camera supports + its current exposure settings (for the CSV)
 let frameHandle = null; // id of the pending per-frame callback, so we can cancel it
 let landmarker = null;  // the FaceLandmarker, created once and reused
 let selectedGlasses = 'round'; // key into GLASSES, changed by the picker buttons
@@ -288,10 +296,14 @@ async function startCamera() {
     }
 
     setStatus('Requesting camera…');
-    // Ask for 720p from the front camera. "ideal" means "if possible": the
-    // browser picks the closest the camera supports instead of failing.
+    // Ask for 720p at 30 FPS from the front camera. "ideal" means "if possible":
+    // the browser picks the closest the camera supports instead of failing.
+    // The frame rate is requested explicitly because measurements showed the
+    // camera defaulting to ~20 FPS, below the brief's 24 FPS target, while our
+    // processing has room for far more. In a dim room the camera may still
+    // drop below 30 to expose each frame longer; that's the camera's choice.
     stream = await navigator.mediaDevices.getUserMedia({
-      video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' },
+      video: { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 }, facingMode: 'user' },
       audio: false,
     });
   } catch (err) {
@@ -315,13 +327,83 @@ async function startCamera() {
   // Same for the 3D canvas, so 1 Three.js unit = 1 video pixel.
   if (!use3D.disabled) resizeGlasses3D(video.videoWidth, video.videoHeight);
 
-  statRes.textContent = `${video.videoWidth}×${video.videoHeight}`;
+  // What the camera agreed to (it may differ from what we asked for). This is
+  // the frame rate it's configured for; the live FPS stat shows what it
+  // actually delivers, which can be lower in dim light.
+  cameraFps = stream.getVideoTracks()[0].getSettings().frameRate ?? null;
+  showCameraInfo(stream.getVideoTracks()[0]);
+  await resetCameraSettings(stream.getVideoTracks()[0]);
+  statRes.textContent = `${video.videoWidth}×${video.videoHeight}${cameraFps ? ` @ ${Math.round(cameraFps)}` : ''}`;
   placeholder.hidden = true;
   cameraBtn.textContent = 'Stop camera';
   cameraBtn.disabled = false;
   setStatus('Camera running');
   recordBtn.disabled = false; // measuring needs a running camera
   startFrameLoop();
+}
+
+// Diagnostic: what can this camera do, and what is it doing right now?
+// We asked for 30 FPS and the camera agreed, yet it delivers 20 (10 in dim
+// light), which points to auto-exposure holding each frame's shutter open
+// longer. To know whether the app could override that, we need to see:
+//   capabilities: the ranges the camera SUPPORTS, e.g.
+//     frameRate {min, max}           → can it do 30 at all?
+//     exposureMode ['manual', 'continuous'] → can exposure be set by us?
+//     exposureTime {min, max, step}  → how short a shutter it allows
+//   settings: what it's CURRENTLY using (e.g. exposureMode 'continuous' = auto)
+// Not every browser/camera reports exposure controls; missing keys mean
+// "not exposed to web pages", not necessarily "the camera can't".
+function showCameraInfo(track) {
+  const caps = track.getCapabilities?.() ?? {};
+  const settings = track.getSettings();
+  // Keep only the keys relevant to frame rate and exposure, so it's readable.
+  const KEYS = ['frameRate', 'width', 'height', 'exposureMode', 'exposureTime', 'exposureCompensation',
+    'brightness', 'whiteBalanceMode', 'resizeMode'];
+  const pick = (o) => Object.fromEntries(KEYS.filter((k) => k in o).map((k) => [k, o[k]]));
+  cameraInfo = { label: track.label, capabilities: pick(caps), settings: pick(settings) };
+  cameraCaps.textContent = JSON.stringify(cameraInfo, null, 2);
+  console.log('Camera info (full capabilities):', caps, 'settings:', settings);
+}
+
+// -----------------------------------------------------------------------------
+// Camera settings reset
+// -----------------------------------------------------------------------------
+// Webcam settings like brightness and exposure mode are stored in the
+// camera/driver itself, not in the page. They survive a page refresh, a camera
+// restart, even closing the browser. During testing, a brightness of 64 left
+// over from one session washed out the image in the next. So every start
+// resets the camera to a known baseline: auto exposure, and brightness and
+// exposure compensation at the middle of their ranges (0 and 64 on the ASUS
+// webcam: the values it reported before anything was changed).
+//
+// Why there are no manual exposure controls any more: they were tried to get
+// past the camera's 20 FPS cap and rejected. In auto mode this webcam also
+// raises sensor gain (amplification); in manual mode the gain drops and the
+// browser offers no gain control, so even the longest exposure that allows
+// 30 FPS (31.25 ms) gave an image too dark to find a face. "Brightness" only
+// added grey haze, and FPS didn't reliably rise anyway. See ThoughtProcess.md.
+async function resetCameraSettings(track) {
+  const caps = track.getCapabilities?.() ?? {};
+  const baseline = {};
+  if (caps.exposureMode?.includes('continuous')) baseline.exposureMode = 'continuous';
+  if (caps.brightness) baseline.brightness = midpoint(caps.brightness);
+  if (caps.exposureCompensation) baseline.exposureCompensation = midpoint(caps.exposureCompensation);
+  if (Object.keys(baseline).length) {
+    // applyConstraints is how a web page changes settings on a running camera;
+    // "advanced" means "try these exact values" (the camera may still adjust them).
+    try {
+      await track.applyConstraints({ advanced: [baseline] });
+    } catch (err) {
+      console.warn('Could not reset camera settings:', err);
+    }
+  }
+  // Refresh the capabilities panel and CSV info with the post-reset settings.
+  showCameraInfo(track);
+}
+
+// Middle of a camera range, snapped to its step: the neutral setting.
+function midpoint({ min, max, step = 1 }) {
+  return min + Math.round((max - min) / 2 / step) * step;
 }
 
 function stopCamera() {
@@ -636,6 +718,8 @@ recordBtn.addEventListener('click', () => {
   if (isRecording()) return;
   setConditions({
     resolution: `${video.videoWidth}x${video.videoHeight}`,
+    cameraFrameRateSetting: cameraFps, // configured rate; summary.cameraFps is what it really delivered
+    camera: cameraInfo, // supported ranges + current exposure settings (see showCameraInfo)
     delegate: statDelegate.textContent,
     mode: use3D.checked ? '3D' : '2D',
     glasses: selectedGlasses,

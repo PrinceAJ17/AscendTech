@@ -35,7 +35,7 @@
         <h2>Debug</h2>
         <label class="toggle"><input type="checkbox" id="use3D" checked /> 3D glasses (off = 2D baseline)</label>
         <label class="toggle"><input type="checkbox" id="matchLighting" checked /> Match room lighting</label>
-        <label class="toggle"><input type="checkbox" id="smoothing" checked /> Smoothing (One Euro)</label>
+        <label class="toggle"><input type="checkbox" id="smoothing" /> Smoothing (One Euro)</label>
         <label class="slider">Min cutoff <output id="minCutoffOut"></output>
           <input type="range" id="minCutoff" min="0.05" max="5" step="0.05" />
         </label>
@@ -50,6 +50,11 @@
         <label class="slider">Occluder height <output id="occHeightOut">–</output>
           <input type="range" id="occHeight" min="-60" max="40" step="1" />
         </label>
+
+        <details class="camera-info">
+          <summary>Camera capabilities</summary>
+          <pre id="cameraCaps" class="summary">Start the camera to see what it supports.</pre>
+        </details>
 
         <h2>Stats</h2>
         <dl class="stats">

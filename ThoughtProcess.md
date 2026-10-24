@@ -159,6 +159,47 @@ Test head turns (yaw ±45°), nods, tilts, moving close to/far from the camera, 
    - Per frame, our work is ~12 ms inference + 0.2–2.6 ms render, which is capacity for ~60 FPS.
    - In dim light the webcam lengthens its exposure and drops to 10 FPS, so the glasses only update 10 times a second. That partly explains the drag felt in dim light.
    - Fix to try: explicitly request 30 FPS from the camera (we currently only request a resolution).
+   - **Applied:** the app now requests `frameRate: { ideal: 30 }`. The camera's configured rate is shown next to the resolution and saved in each CSV's conditions (`cameraFrameRateSetting`), so a new recording shows whether the camera actually agreed.
+   - **Re-measured: no effect.** The camera *agreed* to 30 FPS but still delivered exactly 19.9 FPS in normal light (a frame every 50.0 ms) and 10.0 FPS in dim light (every 95.9 ms). Inference, latency and jitter were unchanged.
+
+   **Current limitation: the webcam's auto-exposure caps the frame rate.**
+
+   - **What exposure is:** each frame is a tiny photo, and the exposure time is how long the sensor collects light for it. Longer exposure gives a brighter image but fewer frames per second, because the next frame can't start until the current one finishes (31 ms → max ~30 FPS, 50 ms → 20 FPS, 100 ms → 10 FPS).
+   - **Why requesting 30 FPS didn't work:** the camera runs in auto exposure ("continuous"). In my lighting it chooses longer exposures for a brighter picture, which silently overrides the requested frame rate. The exact 50 ms / ~100 ms frame gaps match that: a processing limit would give uneven gaps, not clean steps.
+   - **What the camera reports** (ASUS FHD webcam, read via `getCapabilities()` in the new Camera capabilities debug panel):
+     - Supports up to 30 FPS, and is configured for 30.
+     - **Supports manual exposure** (`exposureMode: continuous, manual`): shutter time 3.9 ms to 500 ms, in 3.9 ms steps.
+     - Brightness control from −64 to 64.
+     - Exposure compensation exists, but only applies in auto mode.
+     - No gain/ISO control is exposed.
+   - **A contradiction I can't fully explain:** in auto mode it *reports* a 15.6 ms exposure while delivering 20 FPS. Most likely the reported value is a stored setting rather than what auto-exposure is doing frame by frame, plus a driver "low-light priority" behaviour that web pages can't switch off. This is inferred from the numbers, not confirmed.
+   - **Possible fix: manual exposure.** Fix the shutter at 31.25 ms or less so the camera has time for 30 frames a second.
+     - *Cost:* a darker image, since there's no longer exposure to brighten a dim room. Raising `brightness` lifts it digitally but adds noise.
+     - *Possible bonus:* shorter exposures mean less motion blur, so sharper frames during head turns, and the glasses update 30 times a second instead of 20 (which may reduce the felt drag).
+     - *Open question:* whether the darker image hurts tracking (face loss, jitter) more than the extra frames help. Especially important in dim light, where tracking at a distance already fails.
+     - *Risk:* some Windows webcam drivers ignore manual exposure, or only apply it after a camera restart.
+   - **If manual exposure doesn't work or hurts tracking:** accept ~20 FPS as a documented hardware limit. Our pipeline needs only ~12–15 ms per frame (capacity for 30+ FPS), so the shortfall is the camera's, not the code's.
+
+   **Result: manual exposure tested and rejected.** I added a manual-exposure checkbox, an exposure slider (capped at 31.25 ms) and a camera-brightness slider, then tested them on screen recordings.
+
+   - **First trial:** the image looked washed out even in "auto". Cause: webcam settings are stored in the camera/driver, not the page, so a brightness of 64 from an earlier session survived page refreshes and camera restarts. My code also copied that leftover value into the slider and never sent "auto" when unticked.
+     - *Fix (kept):* every camera start now resets the camera to a baseline: auto exposure, brightness 0, exposure compensation 64 (the middle of each range, which matches the original values).
+     - A second bug also turned up: the "Camera is off" text stayed drawn over the live video, because a CSS rule overrode the `hidden` attribute. Fixed.
+   - **Second trial (after the reset fix):**
+     - **Auto exposure:** natural image, face tracked, glasses fitted well, 19.9 FPS.
+     - **Manual at 31.25 ms:** almost black. Only the ceiling lamp and lit wall were visible, the face couldn't be found, and FPS was still ~19.8. (An earlier trial without a face in view did reach ~30 FPS, so the rise isn't reliable either.)
+     - **Raising brightness (20 → 61):** turned the whole image flat grey; the face was still undetectable.
+     - **Shorter exposures** were even darker.
+   - **Why it fails:**
+     - If auto exposure really used ~50 ms per frame, switching to 31 ms should only darken the image by about a third, yet it was many times darker. So in auto mode the camera must also be raising **sensor gain** (amplification).
+     - In manual mode the driver drops the gain, and **the browser offers no gain control for this camera** (it isn't in `getCapabilities()`).
+     - "Brightness" is not gain: it adds a fixed offset to every pixel, lifting blacks to grey without recovering detail that was never captured.
+     - The frame rate in manual mode also depends on driver logic the browser can't see.
+   - **Decision:** removed the manual exposure and brightness controls. Kept the startup reset (clears leftover settings from testing) and the Camera capabilities panel (documents what the camera supports).
+   - **Keeping the startup reset: considered and decided.** With the manual controls gone, the app no longer changes camera settings itself, so the reset's original job (undoing our own sliders) is done. I kept it anyway, as a safeguard for edge cases where something else leaves the camera in an odd state (a leftover from earlier testing, or another camera app).
+     - *Trade-off:* it forces brightness and exposure compensation to the middle of their ranges on every start, so it would quietly undo any deliberate adjustment a user made in Windows camera settings.
+     - *If that becomes a problem:* delete `resetCameraSettings()`, its call in `startCamera()`, and the `midpoint()` helper. Don't just comment out the function: the call would then fail and the camera wouldn't start.
+   - **Conclusion for the write-up:** the pipeline needs ~12–15 ms per frame (capacity for 30+ FPS), but on this webcam the browser can't get 30 FPS *with a usable image*. Auto exposure caps delivery at 20 FPS indoors and 10 FPS in dim light, and is documented as a hardware limit.
 
 2. **Smoothing isn't needed on this setup.** The summary's 30 s "jitter" number (~1.8 px either way) is dominated by slow body sway, so I recomputed true frame-to-frame jitter from the per-frame rows:
 
@@ -171,6 +212,7 @@ Test head turns (yaw ±45°), nods, tilts, moving close to/far from the camera, 
    - It costs ~3–4 px (p95) of lag behind the face during movement, which *is* visible.
    - Low light did **not** noticeably increase jitter, contrary to my expected limitation. Its real effect is the FPS drop and a shorter tracking range.
    - By the decision rule in section 4 (raw jitter under ~1 px even in dim light), smoothing should be **off by default**, keeping the toggle.
+   - **Applied:** smoothing is now off by default. The tuned values (3 Hz / beta 30) stay in place for when it's switched on, e.g. with a noisier camera.
 
 3. **Tracking limits** (for "known limitations"):
    - **Head turns:** tracking drops at ~63–77° yaw in normal light, and ~42–74° in dim light (less consistent).
