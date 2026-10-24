@@ -89,8 +89,12 @@ button.primary { width: 100%; background: var(--accent); border-color: var(--acc
 
 button:disabled { opacity: 0.6; cursor: wait; }
 
-.toggle { display: flex; align-items: center; gap: 8px; font-size: 0.9rem; cursor: pointer; }
+.toggle { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; font-size: 0.9rem; cursor: pointer; }
 .toggle input { accent-color: var(--accent); }
+
+.slider { display: block; margin-bottom: 8px; font-size: 0.9rem; }
+.slider output { float: right; font-variant-numeric: tabular-nums; color: var(--muted); }
+.slider input { width: 100%; accent-color: var(--accent); }
 
 .status { min-height: 1.2em; margin: 8px 0 0; font-size: 0.85rem; color: var(--muted); }
 .status.error { color: var(--error); }

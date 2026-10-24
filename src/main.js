@@ -1,16 +1,25 @@
 // =============================================================================
-// Glasses Try-On — step 2: webcam + face landmarks + 2D glasses overlay
+// Glasses Try-On — step 3: webcam + face landmarks + 3D glasses (Three.js)
 //
 // Pipeline for every camera frame:
 //   webcam frame → MediaPipe Face Landmarker → 478 landmarks
-//     → 2D placement math (position, rotation, scale) → draw glasses image on canvas
+//     → 3D mode (default): head pose → Three.js renders 3D glasses  (src/glasses3d.js)
+//     → 2D mode (baseline): position/rotation/scale → draw flat image (this file)
 //
-// Step 3 will swap the flat image for a 3D model rendered with Three.js.
+// The 2D version is kept behind a checkbox so the two can be compared side by
+// side, which is useful for the write-up ("what 3D fixed").
+//
+// Screen layers, bottom to top (all in .stage, all mirrored by CSS):
+//   <video> webcam  →  <canvas id="three"> 3D glasses  →  <canvas id="overlay"> 2D glasses + debug dots
 // =============================================================================
 
 // FilesetResolver loads MediaPipe's WebAssembly runtime (the compiled C++ that
 // actually runs the model). FaceLandmarker is the face-tracking "Task" itself.
 import { FilesetResolver, FaceLandmarker } from '@mediapipe/tasks-vision';
+import {
+  initGlasses3D, resizeGlasses3D, updatePose, renderGlasses3D, setDesign, setOccluderVisible,
+  setPitchCorrection, setOccluderHeight, OCCLUDER_DEFAULT_Y_MM, PITCH_DEFAULT_DEG,
+} from './glasses3d.js';
 
 // -----------------------------------------------------------------------------
 // Where the runtime files come from
@@ -87,6 +96,9 @@ const placeholder = document.getElementById('placeholder');
 const cameraBtn = document.getElementById('cameraBtn');
 const statusEl = document.getElementById('status');
 const showLandmarks = document.getElementById('showLandmarks');
+const use3D = document.getElementById('use3D');
+const showOccluder = document.getElementById('showOccluder');
+const statRender = document.getElementById('statRender');
 const statRes = document.getElementById('statRes');
 const statFps = document.getElementById('statFps');
 const statInference = document.getElementById('statInference');
@@ -101,6 +113,18 @@ let stream = null;      // the MediaStream from the webcam (null = camera off)
 let frameHandle = null; // id of the pending per-frame callback, so we can cancel it
 let landmarker = null;  // the FaceLandmarker, created once and reused
 let selectedGlasses = 'round'; // key into GLASSES, changed by the picker buttons
+
+// Set up the 3D renderer once at startup. WebGL can be missing (very old
+// machines, or disabled GPU acceleration); in that case fall back to the 2D
+// overlay instead of breaking the app.
+try {
+  initGlasses3D(document.getElementById('three'));
+  setDesign(selectedGlasses);
+} catch (err) {
+  console.warn('3D unavailable, using 2D overlay:', err);
+  use3D.checked = false;
+  use3D.disabled = true;
+}
 
 function setStatus(text, isError = false) {
   statusEl.textContent = text;
@@ -195,6 +219,8 @@ async function startCamera() {
   // the canvas, and CSS stretches both layers identically on screen.
   canvas.width = video.videoWidth;
   canvas.height = video.videoHeight;
+  // Same for the 3D canvas, so 1 Three.js unit = 1 video pixel.
+  if (!use3D.disabled) resizeGlasses3D(video.videoWidth, video.videoHeight);
 
   statRes.textContent = `${video.videoWidth}×${video.videoHeight}`;
   placeholder.hidden = true;
@@ -214,9 +240,11 @@ function stopCamera() {
   stream = null;
   video.srcObject = null;
   ctx.clearRect(0, 0, canvas.width, canvas.height);
+  if (!use3D.disabled) { updatePose(null); renderGlasses3D(); } // clear the 3D layer too
   placeholder.hidden = false;
   cameraBtn.textContent = 'Start camera';
   statRes.textContent = statFps.textContent = statInference.textContent = statFace.textContent = '–';
+  statRender.textContent = '–';
   setStatus('');
 }
 
@@ -239,6 +267,7 @@ function startFrameLoop() {
   // Counters for the stats panel, reset every second.
   let frames = 0;
   let inferenceTotal = 0;
+  let renderTotal = 0;
   let windowStart = performance.now();
 
   // `now` is a high-resolution timestamp (ms) for this frame. It always
@@ -258,11 +287,23 @@ function startFrameLoop() {
     statFace.textContent = face ? 'yes' : 'no';
 
     // --- 2. Draw ------------------------------------------------------------
-    // Wipe last frame's drawing, then glasses first and debug dots on top of
-    // them, so the dots stay visible for checking alignment.
+    // Timed separately from inference so we can see what rendering costs.
+    // (This is CPU time to issue the drawing; the GPU finishes asynchronously.)
+    const t1 = performance.now();
+
+    // 3D layer: move the glasses to the head pose and draw. When 3D is off,
+    // updatePose(null) hides them so the 3D layer is empty.
+    if (!use3D.disabled) {
+      updatePose(use3D.checked ? face : null, canvas.width, canvas.height);
+      renderGlasses3D();
+    }
+
+    // 2D layer: wipe last frame, then the 2D glasses (only in 2D mode), then
+    // the debug dots on top so they stay visible for checking alignment.
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    if (face) drawGlasses(face);
+    if (face && !use3D.checked) drawGlasses(face);
     if (face && showLandmarks.checked) drawLandmarks(face);
+    renderTotal += performance.now() - t1;
 
     // --- 3. Update stats once per second ------------------------------------
     // Averaging over a window gives a readable number instead of a flickering one.
@@ -270,8 +311,10 @@ function startFrameLoop() {
     if (elapsed >= 1000) {
       statFps.textContent = (frames * 1000 / elapsed).toFixed(1);
       statInference.textContent = `${(inferenceTotal / frames).toFixed(1)} ms`;
+      statRender.textContent = `${(renderTotal / frames).toFixed(1)} ms`;
       frames = 0;
       inferenceTotal = 0;
+      renderTotal = 0;
       windowStart = now;
     }
 
@@ -397,4 +440,29 @@ document.getElementById('glassesList').addEventListener('click', (e) => {
   for (const b of e.currentTarget.children) b.setAttribute('aria-pressed', b === btn);
   selectedGlasses = btn.dataset.id;
   statGlasses.textContent = selectedGlasses;
+  if (!use3D.disabled) setDesign(selectedGlasses); // show the matching 3D model
+});
+
+// Debug: show the invisible head occluder as a green wireframe to check its fit.
+showOccluder.addEventListener('change', () => !use3D.disabled && setOccluderVisible(showOccluder.checked));
+
+// Debug sliders for tuning the head fit live. Once good values are found they
+// get baked in as defaults in glasses3d.js. 'input' fires continuously while
+// dragging, so the effect is visible immediately.
+const pitch = document.getElementById('pitch');
+const pitchOut = document.getElementById('pitchOut');
+pitch.value = PITCH_DEFAULT_DEG; // start the slider at the code default
+pitchOut.textContent = `${PITCH_DEFAULT_DEG}°`;
+pitch.addEventListener('input', () => {
+  setPitchCorrection(Number(pitch.value));
+  pitchOut.textContent = `${pitch.value}°`;
+});
+
+const occHeight = document.getElementById('occHeight');
+const occHeightOut = document.getElementById('occHeightOut');
+occHeight.value = OCCLUDER_DEFAULT_Y_MM; // start the slider at the code default
+occHeightOut.textContent = `${OCCLUDER_DEFAULT_Y_MM} mm`;
+occHeight.addEventListener('input', () => {
+  if (!use3D.disabled) setOccluderHeight(Number(occHeight.value));
+  occHeightOut.textContent = `${occHeight.value} mm`;
 });

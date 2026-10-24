@@ -46,6 +46,14 @@ The whole thing runs client-side in the browser (JavaScript/TypeScript, Vite).
 
 *Why:* this mirrors how glasses physically sit on a face, and it's simple math I can explain line by line in the interview.
 
+*Changed during implementation (step 3): head pose from landmarks, not MediaPipe's matrix.* The original plan used MediaPipe's head-pose matrix with a perspective camera. The risk: if our camera's field of view doesn't exactly match the one MediaPipe assumes, the glasses drift off the face near the image edges. Instead, the pose is built from four landmarks:
+
+- Eye corners 33 and 263 give the left-right direction.
+- Forehead 10 and chin 152 give "up".
+- A cross product of the two gives "out of the face".
+
+It's rendered with an orthographic camera where 1 unit = 1 video pixel, so the glasses line up with the landmarks by construction, the same way the 2D version already fits. Trade-off: no perspective inside the glasses (the far arm isn't drawn slightly smaller), which is barely visible at webcam distance.
+
 ### 4. Smoothing: One Euro filter on the pose
 
 Apply a One Euro filter to the position/rotation (or to the key landmarks) before rendering.

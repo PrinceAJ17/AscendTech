@@ -14,7 +14,9 @@
     <main>
       <section class="stage" aria-label="Camera view">
         <video id="video" playsinline muted></video>
-        <!-- Three.js will draw the glasses on this canvas later -->
+        <!-- Three.js draws the 3D glasses here (transparent background) -->
+        <canvas id="three"></canvas>
+        <!-- 2D glasses (baseline mode) and debug landmark dots -->
         <canvas id="overlay"></canvas>
         <p id="placeholder" class="placeholder">Camera is off</p>
       </section>
@@ -31,13 +33,22 @@
         </div>
 
         <h2>Debug</h2>
-        <label class="toggle"><input type="checkbox" id="showLandmarks" checked /> Show landmarks</label>
+        <label class="toggle"><input type="checkbox" id="use3D" checked /> 3D glasses (off = 2D baseline)</label>
+        <label class="toggle"><input type="checkbox" id="showLandmarks" /> Show landmarks</label>
+        <label class="toggle"><input type="checkbox" id="showOccluder" /> Show occluder</label>
+        <label class="slider">Pitch correction <output id="pitchOut">0°</output>
+          <input type="range" id="pitch" min="-30" max="30" step="1" value="0" />
+        </label>
+        <label class="slider">Occluder height <output id="occHeightOut">–</output>
+          <input type="range" id="occHeight" min="-60" max="40" step="1" />
+        </label>
 
         <h2>Stats</h2>
         <dl class="stats">
           <dt>Resolution</dt><dd id="statRes">–</dd>
           <dt>Camera FPS</dt><dd id="statFps">–</dd>
           <dt>Inference</dt><dd id="statInference">–</dd>
+          <dt>Render</dt><dd id="statRender">–</dd>
           <dt>Face</dt><dd id="statFace">–</dd>
           <dt>Runs on</dt><dd id="statDelegate">–</dd>
           <dt>Selected</dt><dd id="statGlasses">round</dd>
