@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Glasses Try-On</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <header>
+      <h1>Glasses Try-On <span class="tag">prototype</span></h1>
+    </header>
+
+    <main>
+      <section class="stage" aria-label="Camera view">
+        <video id="video" playsinline muted></video>
+        <!-- Three.js will draw the glasses on this canvas later -->
+        <canvas id="overlay"></canvas>
+        <p id="placeholder" class="placeholder">Camera is off</p>
+      </section>
+
+      <aside class="panel">
+        <button id="cameraBtn" class="primary">Start camera</button>
+        <p id="status" class="status" role="status" aria-live="polite"></p>
+
+        <h2>Glasses</h2>
+        <div id="glassesList" class="glasses-list">
+          <button data-id="round" aria-pressed="true">Round</button>
+          <button data-id="rectangle" aria-pressed="false">Rectangle</button>
+          <button data-id="aviator" aria-pressed="false">Aviator</button>
+        </div>
+
+        <h2>Stats</h2>
+        <dl class="stats">
+          <dt>Resolution</dt><dd id="statRes">–</dd>
+          <dt>Camera FPS</dt><dd id="statFps">–</dd>
+          <dt>Selected</dt><dd id="statGlasses">round</dd>
+        </dl>
+      </aside>
+    </main>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
