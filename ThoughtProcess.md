@@ -134,3 +134,74 @@ Test head turns (yaw ±45°), nods, tilts, moving close to/far from the camera, 
 - No real per-user face scale: glasses size is relative to face width, not measured in millimetres.
 - Lighting matching is approximate (no true light estimation).
 - Performance depends on GPU/WebGL support in the browser.
+
+
+
+## Test results (step 7)
+
+13 recordings made with the in-app Measure panel (CSVs, one row per frame). Unless stated otherwise: 3D mode, round glasses, Match room lighting on, smoothing 3 Hz / beta 30.
+
+**Test machine:** Chrome 155 on Windows 11, NVIDIA RTX 5090 Laptop GPU, 24 CPU threads, webcam at 1280×720, MediaPipe on GPU. This is a very powerful machine, so these are best-case numbers.
+
+### Against the brief's targets
+
+| Target | Result | Verdict |
+|---|---|---|
+| FPS ≥ 24 | 19.9 FPS in normal light, 10 FPS in dim light | Missed, but limited by the **camera**, not the code |
+| Latency < 100 ms | Capture→render median 17–19 ms, p95 ~27 ms | Met (excludes display wait and camera exposure) |
+| Alignment during head movement | Tracking holds to ~60–75° yaw | Good range |
+| Different lighting | Works up close in dim light; fails at a distance in dim light | Partial |
+
+### Findings
+
+1. **The camera is the FPS bottleneck.**
+   - Processed FPS equalled camera FPS in every normal run, so no frames were skipped; the camera only delivered ~20 per second.
+   - Per frame, our work is ~12 ms inference + 0.2–2.6 ms render, which is capacity for ~60 FPS.
+   - In dim light the webcam lengthens its exposure and drops to 10 FPS, so the glasses only update 10 times a second. That partly explains the drag felt in dim light.
+   - Fix to try: explicitly request 30 FPS from the camera (we currently only request a resolution).
+
+2. **Smoothing isn't needed on this setup.** The summary's 30 s "jitter" number (~1.8 px either way) is dominated by slow body sway, so I recomputed true frame-to-frame jitter from the per-frame rows:
+
+   | Hold-still run | Raw | Smoothed |
+   |---|---|---|
+   | Normal light | 0.24 px | 0.12 px |
+   | Dim light | 0.36 px | 0.21 px |
+
+   - Smoothing does halve jitter, but raw jitter is already a quarter of a pixel, which is invisible.
+   - It costs ~3–4 px (p95) of lag behind the face during movement, which *is* visible.
+   - Low light did **not** noticeably increase jitter, contrary to my expected limitation. Its real effect is the FPS drop and a shorter tracking range.
+   - By the decision rule in section 4 (raw jitter under ~1 px even in dim light), smoothing should be **off by default**, keeping the toggle.
+
+3. **Tracking limits** (for "known limitations"):
+   - **Head turns:** tracking drops at ~63–77° yaw in normal light, and ~42–74° in dim light (less consistent).
+   - **Distance, normal light:** tracked from a face ~300 px wide down to ~88 px wide, with 0% loss.
+   - **Distance, dim light:** 74–80% face loss. It only held when close (face over ~226 px wide in the smoothing-off run).
+   - **Pitch at rest** reads −2° to −5°: the known forehead-slope offset, not an error.
+
+4. **Weaker hardware (Chrome DevTools 4× CPU throttle):**
+   - Inference 12 → 37 ms. Processed FPS 18.3 vs the camera's 19.9, so it started skipping frames.
+   - Latency median 50 ms, p95 84 ms, worst 106 ms: still mostly under 100 ms, with little margin.
+   - Inference slows even in GPU mode because MediaPipe does much of its pre/post-processing on the CPU.
+
+5. **Unexpected cost: lighting estimation.**
+   - Render time is ~0.2 ms on most frames but spikes to ~10 ms on ~28% of frames. That matches the lighting estimate's ~7 updates per second: reading pixels back from the video stalls the GPU.
+   - **Confirmed** with a second 30 s hold-still run (normal light, same smoothing and resolution) with Match room lighting off:
+
+     | | Lighting on | Lighting off |
+     |---|---|---|
+     | Render median | 0.2 ms | 0.1 ms |
+     | Render p95 | 10 ms | 0.2 ms |
+     | Render worst | 14.4 ms | 0.3 ms |
+     | Frames with a >5 ms spike | 28% | 0% |
+     | Capture→render latency (mean / p95) | 18.8 / 27.1 ms | 15.4 / 19.1 ms |
+     | Slowest 5% of frames, total work | 22 ms | 14.4 ms |
+     | FPS | 19.9 | 19.9 (camera-limited either way) |
+
+   - The spikes arrive about every 187 ms: the estimate is set to every 150 ms, but it can only run when a frame arrives (every 50 ms at 20 FPS), so it lands on roughly every 4th frame and costs ~9 ms each time. Overall it adds ~3.4 ms to average latency and ~8 ms to the slowest 5% of frames.
+   - **Correction:** I first thought this would matter at 30 FPS. It doesn't. A 30 FPS frame has a 33 ms budget and even the spiky frames need only ~22 ms in total. It would only become a problem around 60 FPS (16.7 ms budget) or on much weaker hardware.
+   - **Decision:** keep the feature. If the time were ever needed back, the cheapest fix is updating less often (~2 times a second instead of ~7), since room lighting rarely changes faster than that.
+
+### Not measured yet
+
+- True end-to-end latency (slow-motion phone video of the screen).
+- Genuinely weaker hardware, and other people's faces (also needed to re-check the pitch/occluder defaults).

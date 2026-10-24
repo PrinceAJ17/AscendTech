@@ -186,13 +186,10 @@ function toScene(p, w, h, out) {
   return out.set(p.x * w - w / 2, -(p.y * h - h / 2), -p.z * w);
 }
 
-export function updatePose(face, w, h) {
-  if (!face) {
-    head.visible = false;
-    return;
-  }
-  head.visible = true;
-
+// Fills xAxis/yAxis/zAxis (which way the head faces) and centre from the
+// landmarks, and returns the 3D eye-corner distance in pixels. Shared by
+// updatePose (to place the glasses) and headAngles (for measurements).
+function computeBasis(face, w, h) {
   toScene(face[33], w, h, pA);    // outer eye corner, left side of the raw image
   toScene(face[263], w, h, pB);   // outer eye corner, right side
   toScene(face[10], w, h, pTop);  // top of the forehead
@@ -211,12 +208,41 @@ export function updatePose(face, w, h) {
   // Recompute y = z × x so all three are exactly perpendicular (a clean rotation).
   yAxis.crossVectors(zAxis, xAxis);
 
+  centre.addVectors(pA, pB).multiplyScalar(0.5); // midpoint of the eye corners
+  return eyeDist;
+}
+
+// Head angles in degrees, for the measurement log (e.g. "tracking held up to
+// 48° of yaw"). Computed from the same axes as the glasses, before the pitch
+// correction. Signs (raw camera image, before the selfie mirror):
+//   yaw   + = face turned toward the image's right
+//   pitch + = looking up
+//   roll  + = head tilted so the image-right eye is higher
+export function headAngles(face, w, h) {
+  computeBasis(face, w, h);
+  const deg = THREE.MathUtils.radToDeg;
+  return {
+    // zAxis points out of the face: its sideways and vertical lean give yaw and pitch.
+    yaw: deg(Math.atan2(zAxis.x, zAxis.z)),
+    pitch: deg(Math.asin(THREE.MathUtils.clamp(zAxis.y, -1, 1))),
+    // xAxis runs along the eye line: its slope gives roll.
+    roll: deg(Math.atan2(xAxis.y, xAxis.x)),
+  };
+}
+
+export function updatePose(face, w, h) {
+  if (!face) {
+    head.visible = false;
+    return;
+  }
+  head.visible = true;
+
+  const eyeDist = computeBasis(face, w, h);
+
   // Scale: pixels per millimetre. Because eyeDist is a 3D distance (it includes
   // depth), it does NOT shrink when you turn your head, unlike the 2D version
   // where turning made the glasses shrink.
   const pxPerMm = eyeDist / EYE_CORNER_MM;
-
-  centre.addVectors(pA, pB).multiplyScalar(0.5); // midpoint of the eye corners
 
   // Assemble one 4×4 matrix = rotation (the three axes as columns) × uniform
   // scale, with the translation set to the eye-line centre. Every child of

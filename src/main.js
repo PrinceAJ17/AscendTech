@@ -19,7 +19,9 @@ import { FilesetResolver, FaceLandmarker } from '@mediapipe/tasks-vision';
 import {
   initGlasses3D, resizeGlasses3D, updatePose, renderGlasses3D, setDesign, setOccluderVisible,
   setPitchCorrection, setOccluderHeight, OCCLUDER_DEFAULT_Y_MM, PITCH_DEFAULT_DEG, setLighting,
+  headAngles,
 } from './glasses3d.js';
+import { isRecording, startRecording, recordFrame, cancelRecording, setConditions } from './metrics.js';
 import { OneEuroFilter } from './oneEuro.js';
 import { estimateLighting } from './lighting.js';
 
@@ -182,6 +184,12 @@ const statRender = document.getElementById('statRender');
 const smoothing = document.getElementById('smoothing');
 const matchLighting = document.getElementById('matchLighting');
 const statLight = document.getElementById('statLight');
+const statLatency = document.getElementById('statLatency');
+const recordBtn = document.getElementById('recordBtn');
+const scenarioInput = document.getElementById('scenario');
+const durationSelect = document.getElementById('duration');
+const recordStatus = document.getElementById('recordStatus');
+const summaryOut = document.getElementById('summary');
 const statJitterRaw = document.getElementById('statJitterRaw');
 const statJitterSmooth = document.getElementById('statJitterSmooth');
 const statRes = document.getElementById('statRes');
@@ -312,6 +320,7 @@ async function startCamera() {
   cameraBtn.textContent = 'Stop camera';
   cameraBtn.disabled = false;
   setStatus('Camera running');
+  recordBtn.disabled = false; // measuring needs a running camera
   startFrameLoop();
 }
 
@@ -331,6 +340,13 @@ function stopCamera() {
   statRes.textContent = statFps.textContent = statInference.textContent = statFace.textContent = '–';
   statRender.textContent = statJitterRaw.textContent = statJitterSmooth.textContent = statLight.textContent = '–';
   resetFilters(); // so the next start doesn't glide from where the face was
+  statLatency.textContent = '–';
+  // A recording can't continue without frames; drop it rather than mixing two sessions.
+  if (isRecording()) {
+    cancelRecording();
+    recordStatus.textContent = 'Recording cancelled (camera stopped)';
+  }
+  recordBtn.disabled = true;
   setStatus('');
 }
 
@@ -354,17 +370,25 @@ function startFrameLoop() {
   let frames = 0;
   let inferenceTotal = 0;
   let renderTotal = 0;
+  let latencyTotal = 0;
+  let latencyCount = 0;   // frames that had a capture timestamp
   let rawCentres = [];    // eye-centre positions this second, raw
   let smoothCentres = []; // ... and smoothed
   let windowStart = performance.now();
 
   // `now` is a high-resolution timestamp (ms) for this frame. It always
   // increases, which is exactly what VIDEO mode needs to track between frames.
-  const onFrame = (now) => {
+  // `metadata` is extra info the browser gives about the frame, notably:
+  //   captureTime:     when the camera captured it (same clock as performance.now();
+  //                    not every browser provides it)
+  //   presentedFrames: running count of frames the camera has delivered, so
+  //                    gaps between calls reveal frames we skipped
+  const onFrame = (now, metadata) => {
     // --- 1. Run the model and time it -------------------------------------
     const t0 = performance.now();
     const result = landmarker.detectForVideo(video, now);
-    inferenceTotal += performance.now() - t0;
+    const inferenceMs = performance.now() - t0;
+    inferenceTotal += inferenceMs;
     frames++;
 
     // result.faceLandmarks is an array with one entry per face found (we asked
@@ -411,15 +435,56 @@ function startFrameLoop() {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     if (face && !use3D.checked) drawGlasses(pose);
     if (face && showLandmarks.checked) drawLandmarks(face);
-    renderTotal += performance.now() - t1;
+    const tEnd = performance.now();
+    const renderMs = tEnd - t1;
+    renderTotal += renderMs;
 
-    // --- 3. Update stats once per second ------------------------------------
+    // Capture → render latency: camera capture moment to "we finished drawing".
+    // The screen still has to show it (up to one refresh, ~16 ms at 60 Hz), so
+    // true end-to-end is slightly higher; a slow-motion phone video measures that.
+    const latencyMs = metadata?.captureTime ? tEnd - metadata.captureTime : null;
+    if (latencyMs !== null) {
+      latencyTotal += latencyMs;
+      latencyCount++;
+    }
+
+    // --- 3. Log this frame if a measurement recording is running -------------
+    if (isRecording()) {
+      const rawC = face ? eyeCentre(face, canvas.width, canvas.height) : null;
+      const smoothC = face ? eyeCentre(pose, canvas.width, canvas.height) : null;
+      // Angles from the RAW landmarks: we want what the tracker saw, unsmoothed.
+      const angles = face ? headAngles(face, canvas.width, canvas.height) : {};
+      const progress = recordFrame({
+        now,
+        presentedFrames: metadata?.presentedFrames ?? null,
+        face: !!face,
+        inferenceMs,
+        renderMs,
+        latencyMs,
+        yaw: angles.yaw ?? null,
+        pitch: angles.pitch ?? null,
+        roll: angles.roll ?? null,
+        // Face width in pixels (cheek edge to cheek edge): a stand-in for
+        // distance from the camera in the near/far test.
+        faceWidthPx: face ? Math.hypot((face[454].x - face[234].x) * canvas.width, (face[454].y - face[234].y) * canvas.height) : null,
+        rawCx: rawC?.x ?? null,
+        rawCy: rawC?.y ?? null,
+        smoothCx: smoothC?.x ?? null,
+        smoothCy: smoothC?.y ?? null,
+      });
+      if (isRecording()) recordStatus.textContent = `Recording… ${Math.round(progress * 100)}%`;
+    }
+
+    // --- 4. Update stats once per second ------------------------------------
     // Averaging over a window gives a readable number instead of a flickering one.
     const elapsed = now - windowStart;
     if (elapsed >= 1000) {
       statFps.textContent = (frames * 1000 / elapsed).toFixed(1);
       statInference.textContent = `${(inferenceTotal / frames).toFixed(1)} ms`;
       statRender.textContent = `${(renderTotal / frames).toFixed(1)} ms`;
+      statLatency.textContent = latencyCount ? `${(latencyTotal / latencyCount).toFixed(1)} ms` : 'n/a';
+      latencyTotal = 0;
+      latencyCount = 0;
       const jr = spread(rawCentres);
       const js = spread(smoothCentres);
       statJitterRaw.textContent = jr === null ? '–' : `${jr.toFixed(2)} px`;
@@ -563,6 +628,31 @@ document.getElementById('glassesList').addEventListener('click', (e) => {
   selectedGlasses = btn.dataset.id;
   statGlasses.textContent = selectedGlasses;
   if (!use3D.disabled) setDesign(selectedGlasses); // show the matching 3D model
+});
+
+// Measurement recording. Settings that affect performance are saved with the
+// results, so every CSV states exactly what was being tested.
+recordBtn.addEventListener('click', () => {
+  if (isRecording()) return;
+  setConditions({
+    resolution: `${video.videoWidth}x${video.videoHeight}`,
+    delegate: statDelegate.textContent,
+    mode: use3D.checked ? '3D' : '2D',
+    glasses: selectedGlasses,
+    smoothing: smoothing.checked ? { ...SMOOTHING } : 'off',
+    matchLighting: matchLighting.checked,
+    showLandmarks: showLandmarks.checked,
+  });
+  recordBtn.disabled = true;
+  summaryOut.hidden = true;
+  recordStatus.textContent = 'Recording… 0%';
+  startRecording(Number(durationSelect.value), scenarioInput.value.trim(), (summary) => {
+    recordBtn.disabled = false;
+    recordStatus.textContent = 'Done: CSV downloaded';
+    // Show the summary on the page too, ready to copy into the README.
+    summaryOut.textContent = JSON.stringify(summary, null, 2);
+    summaryOut.hidden = false;
+  });
 });
 
 // Turning room-matching off restores the fixed default lighting, so the two

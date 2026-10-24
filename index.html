@@ -54,9 +54,10 @@
         <h2>Stats</h2>
         <dl class="stats">
           <dt>Resolution</dt><dd id="statRes">–</dd>
-          <dt>Camera FPS</dt><dd id="statFps">–</dd>
+          <dt>FPS (processed)</dt><dd id="statFps">–</dd>
           <dt>Inference</dt><dd id="statInference">–</dd>
           <dt>Render</dt><dd id="statRender">–</dd>
+          <dt>Capture→render</dt><dd id="statLatency">–</dd>
           <dt>Lighting</dt><dd id="statLight">–</dd>
           <dt>Jitter raw</dt><dd id="statJitterRaw">–</dd>
           <dt>Jitter smoothed</dt><dd id="statJitterSmooth">–</dd>
@@ -64,6 +65,21 @@
           <dt>Runs on</dt><dd id="statDelegate">–</dd>
           <dt>Selected</dt><dd id="statGlasses">round</dd>
         </dl>
+
+        <h2>Measure</h2>
+        <label class="field">Scenario
+          <input type="text" id="scenario" placeholder="e.g. normal light, hold still" />
+        </label>
+        <label class="field">Duration
+          <select id="duration">
+            <option value="10">10 s</option>
+            <option value="30" selected>30 s</option>
+            <option value="60">60 s</option>
+          </select>
+        </label>
+        <button id="recordBtn" disabled>Record &amp; download CSV</button>
+        <p id="recordStatus" class="status" role="status" aria-live="polite"></p>
+        <pre id="summary" class="summary" hidden></pre>
       </aside>
     </main>
 

@@ -92,6 +92,31 @@ button:disabled { opacity: 0.6; cursor: wait; }
 .toggle { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; font-size: 0.9rem; cursor: pointer; }
 .toggle input { accent-color: var(--accent); }
 
+.field { display: block; margin-bottom: 8px; font-size: 0.9rem; }
+.field input,
+.field select {
+  display: block;
+  width: 100%;
+  margin-top: 4px;
+  font: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+#recordBtn { width: 100%; }
+.summary {
+  max-height: 260px;
+  overflow: auto;
+  font-size: 0.75rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px;
+  white-space: pre-wrap;
+}
+
 .slider { display: block; margin-bottom: 8px; font-size: 0.9rem; }
 .slider output { float: right; font-variant-numeric: tabular-nums; color: var(--muted); }
 .slider input { width: 100%; accent-color: var(--accent); }
