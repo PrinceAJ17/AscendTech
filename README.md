@@ -54,7 +54,8 @@ webcam frame
 4. **Rendering.**
    - The glasses are built in code at real size (mm) from lens outlines: rims, lenses, bridge, arms.
    - An orthographic camera maps 1 unit to 1 video pixel, so the glasses line up with the landmarks by construction. (MediaPipe's own head-pose matrix would have needed an exact field-of-view match with its assumed camera.)
-   - The occluder is a head-shaped ellipsoid that writes depth but no colour, so arms behind the head are hidden.
+   - Two invisible occluders write depth but no colour, so arms behind the head are hidden: a head-shaped ellipsoid for the back of the head, and MediaPipe's live 468-point face mesh for the front (so the far arm doesn't show through the far lens when you turn).
+   - Rendering happens in two passes: first the occluders and arms, then (after clearing depth) the rims, lenses and bridge, which sit in front of the face on real glasses. The face mesh can then hug the face without the nose clipping a rim.
    - Lenses use transparency; frames use physically based materials with an environment map for reflections.
 5. **Lighting.** About 7 times a second the video is shrunk to 64×48 pixels.
    - Brightness and colour come from the whole frame. Measuring the face would make glasses darker on darker skin.
@@ -105,7 +106,7 @@ Measured with the in-app recorder (30 s runs unless noted; full data and analysi
 - **Extreme head angles:** tracking drops beyond roughly 60–75° of yaw, less consistently in dim light.
 - **One average head:**
   - Glasses size assumes an average eye-corner distance (90 mm). There's no per-user measurement in millimetres.
-  - The occluder is one average head shape.
+  - The back-of-head occluder is one average ellipsoid; only the face itself is fitted (live face mesh). Hair and ears aren't modelled, so an arm can disappear slightly early or late near the ear.
   - The pitch correction and occluder height were calibrated against real glasses on one face, and should be re-checked on more people.
 - **Lighting estimate:** an approximation. A bright window behind the user makes the glasses look too bright, strongly coloured rooms can still shift the tint slightly (capped at ±20%), and there are no cast shadows.
 - **No perspective inside the glasses:** a trade-off of the orthographic camera; the far arm isn't drawn smaller. Barely visible at webcam distance.

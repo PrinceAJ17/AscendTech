@@ -24,7 +24,7 @@ import wasmBinaryPath from '@mediapipe/tasks-vision/vision_wasm_internal.wasm?ur
 import {
   initGlasses3D, resizeGlasses3D, updatePose, renderGlasses3D, setDesign, setOccluderVisible,
   setPitchCorrection, setOccluderHeight, OCCLUDER_DEFAULT_Y_MM, PITCH_DEFAULT_DEG, setLighting,
-  headAngles,
+  headAngles, updateFaceOccluder,
 } from './glasses3d.js';
 import { isRecording, startRecording, recordFrame, cancelRecording, setConditions } from './metrics.js';
 import { OneEuroFilter } from './oneEuro.js';
@@ -521,6 +521,8 @@ function startFrameLoop() {
         }
       }
       updatePose(use3D.checked ? pose : null, canvas.width, canvas.height);
+      // Raw `face`: the face occluder needs all 478 points (updatePose(null) already hid it otherwise).
+      if (face && use3D.checked) updateFaceOccluder(face, canvas.width, canvas.height);
       renderGlasses3D();
     }
 

@@ -15,6 +15,8 @@ import * as THREE from 'three';
 // RoomEnvironment is a ready-made, generated "room" used only as a reflection
 // source, so shiny frames and lenses reflect something believable.
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+// Only used for its list of which landmarks connect into the face mesh.
+import { FaceLandmarker } from '@mediapipe/tasks-vision';
 
 // -----------------------------------------------------------------------------
 // Real-world dimensions (millimetres). The models are built at real size, and
@@ -40,6 +42,8 @@ export const PITCH_DEFAULT_DEG = -2;      // see pitchCorrection below
 let renderer, scene, camera;
 let head;         // group that follows the head; everything below is its child
 let occluder;     // invisible head shape that hides the arms behind the head
+let faceOccluder; // invisible copy of the live face mesh: hides what's behind the face itself
+let lastPxPerMm = 1; // scale from the latest pose, reused by the face occluder
 let keyLight;     // the main directional light, adjusted by setLighting()
 const KEY_LIGHT_INTENSITY = 1.2; // its brightness in a "normal" room
 const designs = {}; // id → THREE.Group for each glasses model
@@ -74,6 +78,7 @@ export function initGlasses3D(canvas) {
   // antialias: true → smooth edges on the thin frame lines.
   renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
   renderer.setPixelRatio(1); // canvas size = video size exactly (set in resize)
+  renderer.autoClear = false; // renderGlasses3D clears manually between its two passes
   // Tone mapping compresses bright highlights the way a camera does, so the
   // reflections don't look blown out next to the real video.
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -90,6 +95,7 @@ export function initGlasses3D(canvas) {
   // top of the frame. setLighting() moves, dims and tints it to match the room.
   keyLight = new THREE.DirectionalLight(0xffffff, KEY_LIGHT_INTENSITY);
   keyLight.position.set(0, 1, 1);
+  keyLight.layers.enableAll(); // lights only count on layers they belong to; light both passes
   scene.add(keyLight);
 
   // Orthographic camera: no perspective, so 1 unit = 1 video pixel everywhere.
@@ -111,6 +117,9 @@ export function initGlasses3D(canvas) {
   scene.add(head);
 
   head.add(buildOccluder());
+  // The face occluder is NOT a child of `head`: its points come straight from
+  // the landmarks every frame, already in scene coordinates.
+  scene.add(buildFaceOccluder(occluder.material));
 
   designs.round = buildGlasses(roundOutline(), plasticMaterial(0x1a1a1a), clearLensMaterial());
   designs.rectangle = buildGlasses(rectangleOutline(), plasticMaterial(0x3b2418), clearLensMaterial());
@@ -233,6 +242,7 @@ export function headAngles(face, w, h) {
 export function updatePose(face, w, h) {
   if (!face) {
     head.visible = false;
+    faceOccluder.visible = false; // hide both occluders together (2D mode, no face, camera off)
     return;
   }
   head.visible = true;
@@ -243,6 +253,7 @@ export function updatePose(face, w, h) {
   // depth), it does NOT shrink when you turn your head, unlike the 2D version
   // where turning made the glasses shrink.
   const pxPerMm = eyeDist / EYE_CORNER_MM;
+  lastPxPerMm = pxPerMm;
 
   // Assemble one 4×4 matrix = rotation (the three axes as columns) × uniform
   // scale, with the translation set to the eye-line centre. Every child of
@@ -258,7 +269,24 @@ export function updatePose(face, w, h) {
   head.matrixWorldNeedsUpdate = true;
 }
 
+// Two render passes, using Three.js "layers" (each object belongs to a layer;
+// the camera only draws the layers it has enabled):
+//   1. BACK layer: the two occluders + the arms. Arms behind the face or head
+//      fail the depth test against the invisible occluders and disappear.
+//   2. clear the depth buffer, then FRONT layer: rims, lenses, bridge.
+//      These always sit in front of the face on real glasses, so they're drawn
+//      on top without ever being tested against the occluders. That lets the
+//      face occluder hug the face closely (hiding the far arm) without the
+//      nose ever clipping a rim.
+const LAYER_FRONT = 0; // Three's default layer
+const LAYER_BACK = 1;
+
 export function renderGlasses3D() {
+  renderer.clear(); // autoClear is off so pass 2 doesn't wipe pass 1
+  camera.layers.set(LAYER_BACK);
+  renderer.render(scene, camera);
+  renderer.clearDepth();
+  camera.layers.set(LAYER_FRONT);
   renderer.render(scene, camera);
 }
 
@@ -273,7 +301,9 @@ export function renderGlasses3D() {
 function buildOccluder() {
   // A sphere stretched into a rough head-shaped ellipsoid.
   const geometry = new THREE.SphereGeometry(1, 32, 24);
-  const material = new THREE.MeshBasicMaterial({ color: 0x00ff88, colorWrite: false });
+  // DoubleSide: the face occluder shares this material, and flipping y and z in
+  // toScene() can reverse its triangles' front/back; drawing both sides makes that irrelevant.
+  const material = new THREE.MeshBasicMaterial({ color: 0x00ff88, colorWrite: false, side: THREE.DoubleSide });
   occluder = new THREE.Mesh(geometry, material);
   // Head-sized radii in mm: 75 wide (half-width), 120 tall (top of skull to
   // chin is ~240 mm), 95 deep.
@@ -282,11 +312,73 @@ function buildOccluder() {
   // the eye line (slightly below it), and ~100 mm behind the eye corners so its
   // front surface stays just behind the eye-corner plane. Any further forward
   // and it would cover the bridge and lens centres (which sit in front of the
-  // face). shortcut: one average head shape; a face-fitted mesh would hug real
-  // faces better.
+  // face; the face occluder below covers the front instead). shortcut: one
+  // average shape for the back of the head; a fitted head mesh would hug real heads better.
   occluder.position.set(0, OCCLUDER_DEFAULT_Y_MM, -100);
   occluder.renderOrder = -1;
+  occluder.layers.set(LAYER_BACK); // only arms are tested against it (see renderGlasses3D)
   return occluder;
+}
+
+// -----------------------------------------------------------------------------
+// Face occluder: the user's actual face surface, rebuilt every frame
+// -----------------------------------------------------------------------------
+// The ellipsoid has to stay behind the eye-corner plane (or it would cover the
+// lenses), so the FRONT of the face (cheeks, temples, nose) had nothing hiding
+// what's behind it. When the head turned, the far arm showed through the far
+// lens and across the cheek. MediaPipe's 468-point mesh IS the front of the
+// face, so drawn invisibly (same depth-only material) it hides exactly what a
+// real face would hide. Ellipsoid = back of the head, face mesh = the front.
+//
+// Pushed slightly back into the head along the face's "out" direction, so the
+// arms where they meet the temples aren't hidden early by landmark noise. Only
+// arms are tested against it (rims and lenses are drawn in a later pass), so it
+// can hug the face. shortcut: one fixed inset; raise it if the near arm vanishes
+// at the temple, lower it if the far arm still peeks through the far lens.
+const FACE_OCCLUDER_INSET_MM = 4;
+
+function buildFaceOccluder(material) {
+  const geometry = new THREE.BufferGeometry();
+  // 478 points (468 face + 10 iris), filled in every frame by updateFaceOccluder.
+  geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(478 * 3), 3));
+  geometry.setIndex(trianglesFromEdges(FaceLandmarker.FACE_LANDMARKS_TESSELATION));
+  faceOccluder = new THREE.Mesh(geometry, material);
+  faceOccluder.renderOrder = -1;     // depth first, like the ellipsoid
+  faceOccluder.layers.set(LAYER_BACK);
+  faceOccluder.frustumCulled = false; // its bounds change every frame; skip the visibility check
+  faceOccluder.visible = false;
+  return faceOccluder;
+}
+
+// MediaPipe publishes its face mesh as a list of EDGES ({start, end} pairs),
+// but they come in order, three per triangle (a→b, b→c, c→a): 2,556 edges =
+// 852 triangles. So each triangle is just the start points of three edges in a row.
+export function trianglesFromEdges(edges) {
+  const triangles = [];
+  for (let i = 0; i < edges.length; i += 3) {
+    triangles.push(edges[i].start, edges[i + 1].start, edges[i + 2].start);
+  }
+  return triangles;
+}
+
+const pTmp = new THREE.Vector3(); // reused per point (no per-frame allocation)
+
+// Move the face occluder's points to this frame's landmarks. Call after
+// updatePose (it reuses that frame's "out of the face" axis and scale).
+// Takes the RAW landmarks: it needs all 478, and smoothing only keeps the 4 used for the pose.
+export function updateFaceOccluder(face, w, h) {
+  if (!face) {
+    faceOccluder.visible = false;
+    return;
+  }
+  faceOccluder.visible = true;
+  const positions = faceOccluder.geometry.attributes.position;
+  const inset = FACE_OCCLUDER_INSET_MM * lastPxPerMm; // mm → pixels
+  for (let i = 0; i < face.length; i++) {
+    toScene(face[i], w, h, pTmp).addScaledVector(zAxis, -inset);
+    positions.setXYZ(i, pTmp.x, pTmp.y, pTmp.z);
+  }
+  positions.needsUpdate = true; // tell Three.js to re-upload the points to the GPU
 }
 
 // -----------------------------------------------------------------------------
@@ -408,7 +500,9 @@ function buildGlasses(outline, frameMat, lensMat, { thin = false } = {}) {
       new THREE.Vector3(side * 70, armTop - 4, -95),       // reaches the ear
       new THREE.Vector3(side * 67, armTop - 22, -115),     // bends down behind it
     ]);
-    group.add(new THREE.Mesh(new THREE.TubeGeometry(armCurve, 40, thin ? 0.9 : 1.6, 8), frameMat));
+    const arm = new THREE.Mesh(new THREE.TubeGeometry(armCurve, 40, thin ? 0.9 : 1.6, 8), frameMat);
+    arm.layers.set(LAYER_BACK); // arms are the part that goes behind the head
+    group.add(arm);
   }
 
   // Bridge: a small arch over the nose joining the two inner rim edges.

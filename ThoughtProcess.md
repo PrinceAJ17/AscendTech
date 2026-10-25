@@ -101,6 +101,10 @@ Apply a One Euro filter to the position/rotation (or to the key landmarks) befor
 - **The 2D version used SVG images instead of PNGs.** It's kept behind a "3D glasses" toggle as a baseline for comparison.
 - **Lenses use plain transparency, not transmission.** Transmission refracts the 3D scene behind it, but the background here is the HTML video, which isn't in the scene, so it would refract nothing.
 - **Occluder:** an ellipsoid head (75 × 120 × 95 mm half-sizes), centred ~100 mm behind the eye corners so it hides the arms without covering the bridge.
+  - **Problem found in testing:** when I turned my head, the far arm showed through the far lens. The ellipsoid has to stay behind the eye-corner plane, so nothing hid what's behind the *front* of the face (cheeks, temples, nose).
+  - **Fix: a second occluder made from MediaPipe's live face mesh.** All 468 landmarks are already the front of the face. MediaPipe lists the mesh as edges, three per triangle in order, so the 852 triangles come straight from the list. The mesh is pushed 4 mm back into the head so landmark noise doesn't hide the near arm at the temple.
+  - **Side effect, and its fix:** a mesh close enough to hide the arm also clipped the far rim near the nose. So the glasses now render in **two passes**: occluders + arms first, then the depth buffer is cleared and the rims, lenses and bridge are drawn on top. Real frames always sit in front of the face, so only the arms ever need hiding.
+  - **Checked** on a still frame of a turned head from my demo video. The long far-arm segment through the lens is gone, and the rims stay intact for all three designs. A short stub of the far hinge can still show through the lens at strong turns, which real glasses also do.
 - **Room-light matching (the stretch goal) was built in step 5.** About 7 times a second the video is shrunk to 64×48 pixels:
   - Brightness and colour (assuming the scene averages to grey) come from the **whole frame**. Measuring the face would make glasses darker on darker skin, which is wrong and unfair.
   - Light direction comes from the left/right halves of the **face**, where skin tone cancels out.
