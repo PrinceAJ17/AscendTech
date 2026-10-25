@@ -1,49 +1,70 @@
+/* =============================================================================
+   Glasses Try-On: full-screen camera with floating "glass" controls.
+   Design: the camera is the content, so chrome floats over it as translucent
+   layers (backdrop blur) instead of opaque bars. One accent colour marks the
+   active choice. System font for its built-in optical sizing.
+   ============================================================================= */
+
 :root {
-  --bg: #111418;
-  --panel: #1b2027;
-  --border: #2c333d;
-  --text: #e6e9ee;
-  --muted: #8b95a3;
+  /* Colour tokens */
+  --text: #f5f5f7;
+  --text-muted: rgba(245, 245, 247, 0.68);   /* ≥4.5:1 on the dark glass */
   --accent: #f5a623;
+  --accent-text: #1a1206;
   --error: #ff6b6b;
+  --glass-bg: rgba(22, 24, 28, 0.55);
+  --glass-bg-strong: rgba(18, 20, 24, 0.78); /* bigger surfaces read as thicker */
+  --glass-edge: rgba(255, 255, 255, 0.14);   /* bright edge = light catching the material */
+  --glass-blur: blur(20px) saturate(160%);
+  --chip-bg: rgba(255, 255, 255, 0.08);
+  --chip-hover: rgba(255, 255, 255, 0.14);
+  --swatch-bg: #ece7df;                      /* light card so dark frames stay visible */
+  --scene: #0b0c0e;
+
+  /* Shape and spacing */
+  --radius-lg: 22px;
+  --radius-md: 14px;
+  --radius-sm: 10px;
+  --gutter: max(16px, env(safe-area-inset-left));
+
+  /* Motion: strong custom curves (built-in CSS easings are too weak) */
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);  /* iOS-like sheet curve */
+
   color-scheme: dark;
 }
 
 * { box-sizing: border-box; }
 
+html, body { height: 100%; }
+
 body {
   margin: 0;
-  font-family: system-ui, sans-serif;
-  background: var(--bg);
-  color: var(--text);
-}
-
-header { padding: 12px 16px; border-bottom: 1px solid var(--border); }
-h1 { margin: 0; font-size: 1.2rem; }
-h2 { margin: 20px 0 8px; font-size: 0.85rem; text-transform: uppercase; color: var(--muted); }
-.tag { font-size: 0.7rem; color: var(--accent); border: 1px solid var(--accent); border-radius: 4px; padding: 1px 6px; vertical-align: middle; }
-
-main {
-  display: grid;
-  grid-template-columns: 1fr 260px;
-  gap: 16px;
-  padding: 16px;
-}
-
-@media (max-width: 800px) {
-  main { grid-template-columns: 1fr; }
-}
-
-.stage {
-  position: relative;
-  aspect-ratio: 4 / 3;
-  background: #000;
-  border: 1px solid var(--border);
-  border-radius: 8px;
   overflow: hidden;
+  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  color: var(--text);
+  background: var(--scene);
+  -webkit-font-smoothing: antialiased;
 }
 
-/* Mirror both layers the same way so the overlay stays aligned with the video */
+/* `display` rules below would otherwise override the hidden attribute */
+[hidden] { display: none !important; }
+
+/* Things that only make sense while the camera runs */
+body[data-camera="off"] .live-only { display: none; }
+
+/* ---------------------------------------------------------------------------
+   Stage: the camera fills the window like a mirror
+   --------------------------------------------------------------------------- */
+.stage {
+  position: fixed;
+  inset: 0;
+  background: radial-gradient(ellipse at 50% 40%, #1b1d22 0%, var(--scene) 70%);
+}
+
+/* Video and both canvases share the same size and the same "cover" crop, so
+   anything drawn on a canvas stays aligned with the face in the video.
+   Mirrored like a real mirror (selfie view). */
 .stage video,
 .stage canvas {
   position: absolute;
@@ -54,81 +75,449 @@ main {
   transform: scaleX(-1);
 }
 
-.placeholder {
-  position: absolute;
-  inset: 0;
+/* ---------------------------------------------------------------------------
+   Glass material
+   --------------------------------------------------------------------------- */
+.glass {
+  background: var(--glass-bg);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--glass-edge);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+}
+
+/* ---------------------------------------------------------------------------
+   Top bar
+   --------------------------------------------------------------------------- */
+.topbar {
+  position: fixed;
+  top: max(12px, env(safe-area-inset-top));
+  left: var(--gutter);
+  right: max(16px, env(safe-area-inset-right));
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 6px 6px 18px;
+  border-radius: 999px;
+  z-index: 10;
+}
+
+.brand {
   margin: 0;
-  display: grid;
-  place-items: center;
-  color: var(--muted);
-}
-/* `display: grid` above would otherwise override the hidden attribute, leaving
-   "Camera is off" drawn over the live video */
-.placeholder[hidden] { display: none; }
-
-.panel {
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 16px;
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
 }
 
+.topbar-actions { display: flex; align-items: center; gap: 6px; }
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 36px;
+  padding: 0 14px;
+  border-radius: 999px;
+  background: var(--chip-bg);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+/* Green when a face is tracked, amber while searching: status at a glance */
+.face-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  transition: background-color 200ms ease;
+}
+body[data-face="yes"] .face-dot { background: #34c759; }
+
+/* ---------------------------------------------------------------------------
+   Buttons
+   --------------------------------------------------------------------------- */
 button {
   font: inherit;
-  color: var(--text);
-  background: transparent;
-  border: 1px solid var(--border);
+  color: inherit;
+  cursor: pointer;
+  border: 0;
+  background: none;
+  -webkit-tap-highlight-color: transparent;
+  /* Press feedback on pointer-down, not release: the UI "hears" you instantly */
+  transition: transform 120ms var(--ease-out), background-color 150ms ease, opacity 150ms ease;
+}
+button:active:not(:disabled) { transform: scale(0.97); }
+button:focus-visible,
+summary:focus-visible,
+input:focus-visible,
+select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+button:disabled { cursor: default; opacity: 0.5; }
+
+.icon-btn {
+  display: grid;
+  place-items: center;
+  width: 44px;               /* 44px minimum touch target */
+  height: 44px;
+  border-radius: 50%;
+  background: var(--chip-bg);
+}
+.icon-btn svg {
+  width: 20px;
+  height: 20px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+#stopBtn svg { fill: currentColor; stroke: none; width: 14px; height: 14px; }
+.icon-btn[aria-expanded="true"] { background: var(--text); color: var(--scene); }
+
+.primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: 50px;
+  padding: 0 28px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--accent-text);
+  font-size: 1rem;
+  font-weight: 600;
+}
+/* While loading the model / asking for the camera, show a spinner in the button */
+.primary:disabled { opacity: 0.85; cursor: progress; }
+.primary:disabled::before {
+  content: "";
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  animation: spin 700ms linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.secondary {
+  width: 100%;
+  min-height: 44px;
+  border-radius: var(--radius-sm);
+  background: var(--chip-bg);
+  font-weight: 500;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .icon-btn:hover:not([aria-expanded="true"]),
+  .secondary:hover:not(:disabled) { background: var(--chip-hover); }
+  .primary:hover:not(:disabled) { background: #ffb43d; }
+}
+
+/* ---------------------------------------------------------------------------
+   Start screen (hero)
+   --------------------------------------------------------------------------- */
+.hero {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  width: min(420px, calc(100vw - 32px));
+  transform: translate(-50%, -50%);
+  padding: 36px 32px 28px;
+  border-radius: var(--radius-lg);
+  background: var(--glass-bg-strong);
+  text-align: center;
+  z-index: 5;
+  /* Materialise: arrive with a little scale and blur, not just a fade */
+  transition: opacity 300ms var(--ease-out), transform 300ms var(--ease-out), filter 300ms var(--ease-out);
+  @starting-style {
+    opacity: 0;
+    transform: translate(-50%, -48%) scale(0.97);
+    filter: blur(6px);
+  }
+}
+
+.hero-title {
+  margin: 0 0 8px;
+  font-size: clamp(1.75rem, 4vw, 2.125rem);
+  line-height: 1.1;
+  font-weight: 700;
+  letter-spacing: -0.025em;   /* large text wants negative tracking */
+  text-wrap: balance;
+}
+.hero-text {
+  margin: 0 auto 24px;
+  max-width: 32ch;
+  color: var(--text-muted);
+  text-wrap: pretty;
+}
+.hero-note {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 6px;
+  margin: 20px 0 0;
+  font-size: 0.8125rem;
+  color: var(--text-muted);
+}
+.hero-note svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+
+.status { min-height: 1.5em; margin: 12px 0 0; font-size: 0.875rem; color: var(--text-muted); }
+.status:empty { margin: 0; min-height: 0; }
+.status.error { color: var(--error); }
+
+/* ---------------------------------------------------------------------------
+   "Looking for your face" hint
+   --------------------------------------------------------------------------- */
+.hint {
+  position: fixed;
+  top: calc(max(12px, env(safe-area-inset-top)) + 68px);
+  left: 50%;
+  margin: 0;
+  padding: 8px 16px;
+  border-radius: 999px;
+  font-size: 0.875rem;
+  white-space: nowrap;
+  transform: translateX(-50%);
+  z-index: 4;
+  /* Hidden (but laid out) until no face is found; fades + drops in */
+  opacity: 0;
+  translate: 0 -6px;
+  pointer-events: none;
+  transition: opacity 250ms var(--ease-out), translate 250ms var(--ease-out);
+}
+body[data-camera="on"][data-face="no"] .hint { opacity: 1; translate: 0 0; }
+
+/* ---------------------------------------------------------------------------
+   Frame picker tray
+   --------------------------------------------------------------------------- */
+.tray {
+  position: fixed;
+  left: 50%;
+  bottom: max(20px, env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  padding: 6px;
+  border-radius: var(--radius-lg);
+  z-index: 10;
+  transition: opacity 300ms var(--ease-out), translate 300ms var(--ease-out);
+  @starting-style { opacity: 0; translate: 0 16px; }
+}
+
+.tray-items {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(96px, 1fr));
+  gap: 0;
+}
+
+/* One indicator slides between choices. A transition (not keyframes) so a fast
+   second click retargets it smoothly from wherever it is. */
+.tray-indicator {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: calc(100% / 3);
+  border-radius: calc(var(--radius-lg) - 6px);
+  background: rgba(255, 255, 255, 0.16);
+  box-shadow: inset 0 0 0 1.5px var(--accent);
+  transition: transform 320ms var(--ease-drawer);
+}
+.tray-items[data-active="1"] .tray-indicator { transform: translateX(100%); }
+.tray-items[data-active="2"] .tray-indicator { transform: translateX(200%); }
+
+.tray-items button {
+  position: relative;          /* above the indicator */
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+  padding: 10px 12px 8px;
+  border-radius: calc(var(--radius-lg) - 6px);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--text-muted);
+}
+.tray-items button[aria-pressed="true"] { color: var(--text); }
+.tray-items img {
+  display: block;
+  width: 84px;
+  height: 40px;
+  padding: 7px 6px;
+  border-radius: var(--radius-sm);
+  background: var(--swatch-bg);
+  object-fit: contain;
+  transition: transform 200ms var(--ease-out);
+}
+@media (hover: hover) and (pointer: fine) {
+  .tray-items button:hover img { transform: translateY(-2px); }
+}
+
+/* ---------------------------------------------------------------------------
+   Developer drawer
+   --------------------------------------------------------------------------- */
+.drawer {
+  position: fixed;
+  top: calc(max(12px, env(safe-area-inset-top)) + 64px);
+  right: max(16px, env(safe-area-inset-right));
+  bottom: max(16px, env(safe-area-inset-bottom));
+  width: min(360px, calc(100vw - 32px));
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--radius-lg);
+  background: var(--glass-bg-strong);
+  z-index: 20;
+  /* Enters from (and leaves toward) the right edge where its button lives */
+  transform: translateX(calc(100% + 32px));
+  opacity: 0;
+  transition: transform 340ms var(--ease-drawer), opacity 200ms ease;
+}
+.drawer[data-open] {
+  transform: none;
+  opacity: 1;
+}
+
+.drawer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 10px 10px 20px;
+  border-bottom: 1px solid var(--glass-edge);
+}
+.drawer-head h2 { margin: 0; font-size: 1rem; font-weight: 600; letter-spacing: -0.01em; }
+
+.drawer-body {
+  flex: 1;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 8px 16px 20px;
+  font-size: 0.875rem;
+}
+
+details { border-bottom: 1px solid rgba(255, 255, 255, 0.07); }
+details:last-child { border-bottom: 0; }
+summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 44px;
+  cursor: pointer;
+  list-style: none;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;    /* small caps-style labels want positive tracking */
+  text-transform: uppercase;
+  color: var(--text-muted);
   border-radius: 6px;
-  padding: 8px 12px;
+}
+summary::-webkit-details-marker { display: none; }
+summary::after {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(45deg) translate(-2px, -2px);
+  transition: transform 200ms var(--ease-out);
+}
+details[open] > summary::after { transform: rotate(225deg) translate(-2px, -2px); }
+details > :not(summary):last-child { margin-bottom: 14px; }
+
+.toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 36px;
   cursor: pointer;
 }
-button:hover { border-color: var(--muted); }
-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.toggle small { color: var(--text-muted); font-size: 0.75rem; }
+.toggle input { width: 18px; height: 18px; accent-color: var(--accent); }
 
-button.primary { width: 100%; background: var(--accent); border-color: var(--accent); color: #111; font-weight: 600; }
+.slider { display: block; margin: 6px 0 10px; }
+.slider output { float: right; font-variant-numeric: tabular-nums; color: var(--text-muted); }
+.slider input { width: 100%; height: 28px; accent-color: var(--accent); }
 
-.glasses-list { display: grid; gap: 6px; }
-.glasses-list button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
-
-button:disabled { opacity: 0.6; cursor: wait; }
-
-.toggle { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; font-size: 0.9rem; cursor: pointer; }
-.toggle input { accent-color: var(--accent); }
-
-.field { display: block; margin-bottom: 8px; font-size: 0.9rem; }
+.field { display: block; margin: 0 0 10px; }
 .field input,
 .field select {
   display: block;
   width: 100%;
+  min-height: 40px;
   margin-top: 4px;
   font: inherit;
   color: var(--text);
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 6px 8px;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid var(--glass-edge);
+  border-radius: var(--radius-sm);
+  padding: 6px 10px;
 }
-#recordBtn { width: 100%; }
-.camera-info { margin-top: 8px; font-size: 0.9rem; }
-.camera-info summary { cursor: pointer; color: var(--muted); }
-.summary {
-  max-height: 260px;
+
+.stats {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 6px 12px;
+  margin: 0 0 14px;
+}
+.stats dt { color: var(--text-muted); }
+.stats dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
+
+.code {
+  max-height: 240px;
   overflow: auto;
-  font-size: 0.75rem;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 8px;
+  margin: 10px 0 0;
+  padding: 10px;
+  font: 0.75rem/1.45 ui-monospace, SFMono-Regular, Consolas, monospace;
+  background: rgba(0, 0, 0, 0.35);
+  border-radius: var(--radius-sm);
   white-space: pre-wrap;
 }
 
-.slider { display: block; margin-bottom: 8px; font-size: 0.9rem; }
-.slider output { float: right; font-variant-numeric: tabular-nums; color: var(--muted); }
-.slider input { width: 100%; accent-color: var(--accent); }
+/* ---------------------------------------------------------------------------
+   Small screens: tray spans the width, drawer covers more of the screen
+   --------------------------------------------------------------------------- */
+@media (max-width: 520px) {
+  .brand { font-size: 0.9375rem; }
+  .tray { left: 16px; right: 16px; transform: none; }
+  .tray-items { grid-template-columns: repeat(3, 1fr); }
+  .tray-items img { width: 100%; max-width: 84px; }
+  .drawer { top: calc(max(12px, env(safe-area-inset-top)) + 64px); left: 16px; width: auto; }
+  .hint { white-space: normal; width: calc(100vw - 32px); text-align: center; }
+}
 
-.status { min-height: 1.2em; margin: 8px 0 0; font-size: 0.85rem; color: var(--muted); }
-.status.error { color: var(--error); }
+/* ---------------------------------------------------------------------------
+   Accessibility preferences
+   --------------------------------------------------------------------------- */
+/* Reduced motion: keep the fades (they help comprehension), drop the movement */
+@media (prefers-reduced-motion: reduce) {
+  .drawer { transform: none; transition: opacity 150ms ease; visibility: hidden; }
+  .drawer[data-open] { visibility: visible; }
+  .tray-indicator, .tray-items img, summary::after, button { transition: none; }
+  .hint { translate: none; }
+  /* Entrances become plain fades: only opacity is transitioned */
+  .hero, .tray { transition: opacity 200ms ease; }
+  .primary:disabled::before { animation-duration: 1.6s; }
+}
 
-.stats { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 0; font-size: 0.9rem; }
-.stats dt { color: var(--muted); }
-.stats dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
+/* Reduced transparency: solid surfaces instead of glass */
+@media (prefers-reduced-transparency: reduce) {
+  .glass { background: #17191d; -webkit-backdrop-filter: none; backdrop-filter: none; }
+}
+
+/* More contrast: near-solid surfaces with defined edges */
+@media (prefers-contrast: more) {
+  :root { --text-muted: rgba(245, 245, 247, 0.9); --glass-edge: rgba(255, 255, 255, 0.5); }
+  .glass { background: #101114; }
+}

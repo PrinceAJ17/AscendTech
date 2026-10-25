@@ -2,91 +2,160 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- viewport-fit=cover lets the camera fill the screen edge to edge on phones;
+         safe-area padding in the CSS keeps controls clear of notches -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark" />
     <title>Glasses Try-On</title>
     <link rel="stylesheet" href="/src/style.css" />
   </head>
-  <body>
-    <header>
-      <h1>Glasses Try-On <span class="tag">prototype</span></h1>
+  <body data-camera="off" data-face="no">
+    <!-- Full-screen camera "mirror". Three layers, bottom to top, all mirrored by CSS. -->
+    <main class="stage" aria-label="Camera view">
+      <video id="video" playsinline muted></video>
+      <!-- Three.js draws the 3D glasses here (transparent background) -->
+      <canvas id="three"></canvas>
+      <!-- 2D glasses (baseline mode) and debug landmark dots -->
+      <canvas id="overlay"></canvas>
+    </main>
+
+    <!-- Floating top bar: title, live status, and the two controls you need while trying on -->
+    <header class="topbar glass">
+      <h1 class="brand">Glasses Try-On</h1>
+      <div class="topbar-actions">
+        <span class="pill live-only" title="Frames processed per second">
+          <span class="face-dot" aria-hidden="true"></span>
+          <span id="fpsPill">–</span>&nbsp;FPS
+        </span>
+        <button id="stopBtn" class="icon-btn live-only" aria-label="Stop camera" title="Stop camera">
+          <!-- Lucide "square" -->
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="2" /></svg>
+        </button>
+        <button id="devBtn" class="icon-btn" aria-label="Developer tools" title="Developer tools (D)"
+          aria-controls="devDrawer" aria-expanded="false" aria-keyshortcuts="D">
+          <!-- Lucide "sliders-horizontal" -->
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M21 4h-7M10 4H3M21 12h-9M8 12H3M21 20h-5M12 20H3M14 2v4M8 10v4M16 18v4" />
+          </svg>
+        </button>
+      </div>
     </header>
 
-    <main>
-      <section class="stage" aria-label="Camera view">
-        <video id="video" playsinline muted></video>
-        <!-- Three.js draws the 3D glasses here (transparent background) -->
-        <canvas id="three"></canvas>
-        <!-- 2D glasses (baseline mode) and debug landmark dots -->
-        <canvas id="overlay"></canvas>
-        <p id="placeholder" class="placeholder">Camera is off</p>
-      </section>
+    <!-- Start screen, shown while the camera is off -->
+    <section id="placeholder" class="hero glass" aria-labelledby="heroTitle">
+      <h2 id="heroTitle" class="hero-title">Try on glasses, live.</h2>
+      <p class="hero-text">Your face is tracked in real time and 3D frames are fitted to it, entirely in your browser.</p>
+      <button id="cameraBtn" class="primary">Start camera</button>
+      <p id="status" class="status" role="status" aria-live="polite"></p>
+      <p class="hero-note">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2" /><path d="M8 11V7a4 4 0 0 1 8 0v4" /></svg>
+        Video never leaves your device.
+      </p>
+    </section>
 
-      <aside class="panel">
-        <button id="cameraBtn" class="primary">Start camera</button>
-        <p id="status" class="status" role="status" aria-live="polite"></p>
+    <!-- Shown while the camera runs but no face is found -->
+    <p class="hint glass live-only" aria-live="polite">Looking for your face. Face the camera in good light.</p>
 
-        <h2>Glasses</h2>
-        <div id="glassesList" class="glasses-list">
-          <button data-id="round" aria-pressed="true">Round</button>
-          <button data-id="rectangle" aria-pressed="false">Rectangle</button>
-          <button data-id="aviator" aria-pressed="false">Aviator</button>
-        </div>
+    <!-- Frame picker: the main interaction. Keys 1-3 also switch. -->
+    <nav class="tray glass live-only" aria-label="Choose glasses">
+      <div id="glassesList" class="tray-items" data-active="0">
+        <span class="tray-indicator" aria-hidden="true"></span>
+        <button data-id="round" aria-pressed="true" aria-keyshortcuts="1">
+          <img src="/glasses/round.svg" alt="" width="72" height="26" />
+          <span>Round</span>
+        </button>
+        <button data-id="rectangle" aria-pressed="false" aria-keyshortcuts="2">
+          <img src="/glasses/rectangle.svg" alt="" width="72" height="26" />
+          <span>Rectangle</span>
+        </button>
+        <button data-id="aviator" aria-pressed="false" aria-keyshortcuts="3">
+          <img src="/glasses/aviator.svg" alt="" width="72" height="26" />
+          <span>Aviator</span>
+        </button>
+      </div>
+    </nav>
 
-        <h2>Debug</h2>
-        <label class="toggle"><input type="checkbox" id="use3D" checked /> 3D glasses (off = 2D baseline)</label>
-        <label class="toggle"><input type="checkbox" id="matchLighting" checked /> Match room lighting</label>
-        <label class="toggle"><input type="checkbox" id="smoothing" /> Smoothing (One Euro)</label>
-        <label class="slider">Min cutoff <output id="minCutoffOut"></output>
-          <input type="range" id="minCutoff" min="0.05" max="5" step="0.05" />
-        </label>
-        <label class="slider">Beta <output id="betaOut"></output>
-          <input type="range" id="beta" min="0" max="50" step="0.5" />
-        </label>
-        <label class="toggle"><input type="checkbox" id="showLandmarks" /> Show landmarks</label>
-        <label class="toggle"><input type="checkbox" id="showOccluder" /> Show occluder</label>
-        <label class="slider">Pitch correction <output id="pitchOut">0°</output>
-          <input type="range" id="pitch" min="-30" max="30" step="1" value="0" />
-        </label>
-        <label class="slider">Occluder height <output id="occHeightOut">–</output>
-          <input type="range" id="occHeight" min="-60" max="40" step="1" />
-        </label>
+    <!-- Developer tools: hidden by default, slides in from the right edge (where its button is).
+         `inert` keeps it out of keyboard focus and screen readers while closed. -->
+    <aside id="devDrawer" class="drawer glass" aria-label="Developer tools" inert>
+      <div class="drawer-head">
+        <h2>Developer tools</h2>
+        <button id="devClose" class="icon-btn" aria-label="Close developer tools">
+          <!-- Lucide "x" -->
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12" /></svg>
+        </button>
+      </div>
 
-        <details class="camera-info">
-          <summary>Camera capabilities</summary>
-          <pre id="cameraCaps" class="summary">Start the camera to see what it supports.</pre>
+      <div class="drawer-body">
+        <details open>
+          <summary>Live stats</summary>
+          <dl class="stats">
+            <dt>Resolution</dt><dd id="statRes">–</dd>
+            <dt>FPS (processed)</dt><dd id="statFps">–</dd>
+            <dt>Inference</dt><dd id="statInference">–</dd>
+            <dt>Render</dt><dd id="statRender">–</dd>
+            <dt>Capture→render</dt><dd id="statLatency">–</dd>
+            <dt>Lighting</dt><dd id="statLight">–</dd>
+            <dt>Jitter raw</dt><dd id="statJitterRaw">–</dd>
+            <dt>Jitter smoothed</dt><dd id="statJitterSmooth">–</dd>
+            <dt>Face</dt><dd id="statFace">–</dd>
+            <dt>Runs on</dt><dd id="statDelegate">–</dd>
+            <dt>Selected</dt><dd id="statGlasses">round</dd>
+          </dl>
         </details>
 
-        <h2>Stats</h2>
-        <dl class="stats">
-          <dt>Resolution</dt><dd id="statRes">–</dd>
-          <dt>FPS (processed)</dt><dd id="statFps">–</dd>
-          <dt>Inference</dt><dd id="statInference">–</dd>
-          <dt>Render</dt><dd id="statRender">–</dd>
-          <dt>Capture→render</dt><dd id="statLatency">–</dd>
-          <dt>Lighting</dt><dd id="statLight">–</dd>
-          <dt>Jitter raw</dt><dd id="statJitterRaw">–</dd>
-          <dt>Jitter smoothed</dt><dd id="statJitterSmooth">–</dd>
-          <dt>Face</dt><dd id="statFace">–</dd>
-          <dt>Runs on</dt><dd id="statDelegate">–</dd>
-          <dt>Selected</dt><dd id="statGlasses">round</dd>
-        </dl>
+        <details open>
+          <summary>Display</summary>
+          <label class="toggle"><input type="checkbox" id="use3D" checked /> 3D glasses <small>(off = 2D baseline)</small></label>
+          <label class="toggle"><input type="checkbox" id="matchLighting" checked /> Match room lighting</label>
+          <label class="toggle"><input type="checkbox" id="showLandmarks" /> Show landmarks</label>
+          <label class="toggle"><input type="checkbox" id="showOccluder" /> Show occluder</label>
+        </details>
 
-        <h2>Measure</h2>
-        <label class="field">Scenario
-          <input type="text" id="scenario" placeholder="e.g. normal light, hold still" />
-        </label>
-        <label class="field">Duration
-          <select id="duration">
-            <option value="10">10 s</option>
-            <option value="30" selected>30 s</option>
-            <option value="60">60 s</option>
-          </select>
-        </label>
-        <button id="recordBtn" disabled>Record &amp; download CSV</button>
-        <p id="recordStatus" class="status" role="status" aria-live="polite"></p>
-        <pre id="summary" class="summary" hidden></pre>
-      </aside>
-    </main>
+        <details>
+          <summary>Fit</summary>
+          <label class="slider">Pitch correction <output id="pitchOut">0°</output>
+            <input type="range" id="pitch" min="-30" max="30" step="1" value="0" />
+          </label>
+          <label class="slider">Occluder height <output id="occHeightOut">–</output>
+            <input type="range" id="occHeight" min="-60" max="40" step="1" />
+          </label>
+        </details>
+
+        <details>
+          <summary>Smoothing</summary>
+          <label class="toggle"><input type="checkbox" id="smoothing" /> One Euro filter</label>
+          <label class="slider">Min cutoff <output id="minCutoffOut"></output>
+            <input type="range" id="minCutoff" min="0.05" max="5" step="0.05" />
+          </label>
+          <label class="slider">Beta <output id="betaOut"></output>
+            <input type="range" id="beta" min="0" max="50" step="0.5" />
+          </label>
+        </details>
+
+        <details>
+          <summary>Measure</summary>
+          <label class="field">Scenario
+            <input type="text" id="scenario" placeholder="e.g. normal light, hold still" />
+          </label>
+          <label class="field">Duration
+            <select id="duration">
+              <option value="10">10 s</option>
+              <option value="30" selected>30 s</option>
+              <option value="60">60 s</option>
+            </select>
+          </label>
+          <button id="recordBtn" class="secondary" disabled>Record &amp; download CSV</button>
+          <p id="recordStatus" class="status" role="status" aria-live="polite"></p>
+          <pre id="summary" class="code" hidden></pre>
+        </details>
+
+        <details>
+          <summary>Camera capabilities</summary>
+          <pre id="cameraCaps" class="code">Start the camera to see what it supports.</pre>
+        </details>
+      </div>
+    </aside>
 
     <script type="module" src="/src/main.js"></script>
   </body>

@@ -13,9 +13,14 @@
 //   <video> webcam  →  <canvas id="three"> 3D glasses  →  <canvas id="overlay"> 2D glasses + debug dots
 // =============================================================================
 
-// FilesetResolver loads MediaPipe's WebAssembly runtime (the compiled C++ that
-// actually runs the model). FaceLandmarker is the face-tracking "Task" itself.
-import { FilesetResolver, FaceLandmarker } from '@mediapipe/tasks-vision';
+// FaceLandmarker is MediaPipe's face-tracking "Task". It runs on MediaPipe's
+// WebAssembly runtime (the compiled C++ that actually runs the model).
+import { FaceLandmarker } from '@mediapipe/tasks-vision';
+// "?url" asks Vite for the file's URL instead of its code. Vite then copies the
+// runtime files into the build itself, so the deployed app serves them from
+// its own server (no CDN), and they always match the installed npm version.
+import wasmLoaderPath from '@mediapipe/tasks-vision/vision_wasm_internal.js?url';
+import wasmBinaryPath from '@mediapipe/tasks-vision/vision_wasm_internal.wasm?url';
 import {
   initGlasses3D, resizeGlasses3D, updatePose, renderGlasses3D, setDesign, setOccluderVisible,
   setPitchCorrection, setOccluderHeight, OCCLUDER_DEFAULT_Y_MM, PITCH_DEFAULT_DEG, setLighting,
@@ -28,17 +33,19 @@ import { estimateLighting } from './lighting.js';
 // -----------------------------------------------------------------------------
 // Where the runtime files come from
 // -----------------------------------------------------------------------------
-// shortcut: both files load from CDNs, so the app needs internet on first load;
-// copy them into public/ before the final demo so it doesn't depend on others' servers.
+// Both are served by the app itself, so it doesn't depend on anyone else's servers.
 
-// The .wasm runtime. The version MUST match the npm package we installed
-// (see package.json), otherwise the JS and the wasm won't talk to each other.
-const WASM_URL = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.1.1/wasm';
+// The .wasm runtime: the SIMD build (imported above). SIMD = processing several
+// numbers per instruction, which every current browser supports.
+// shortcut: no fallback to MediaPipe's non-SIMD build; only browsers from
+// before ~2021 (e.g. Safari < 16.4) lack SIMD. Add vision_wasm_nosimd_internal if those matter.
+const WASM_FILESET = { wasmLoaderPath, wasmBinaryPath };
 
-// The trained model bundle: BlazeFace detector + face landmark model (+ blendshapes).
+// The trained model bundle: BlazeFace detector + face landmark model (+ blendshapes),
+// stored in public/models/. Downloaded once from Google's official MediaPipe model storage:
+// https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task
 // "float16" = weights stored as 16-bit floats: half the size of float32, same accuracy in practice.
-const MODEL_URL =
-  'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task';
+const MODEL_URL = '/models/face_landmarker.task';
 
 // -----------------------------------------------------------------------------
 // Landmarks we care about (index into the 478-point face mesh).
@@ -178,9 +185,9 @@ function spread(samples) {
 const video = document.getElementById('video');
 const canvas = document.getElementById('overlay');
 const ctx = canvas.getContext('2d'); // 2D drawing API for the debug dots
-const stage = document.querySelector('.stage');
 const placeholder = document.getElementById('placeholder');
 const cameraBtn = document.getElementById('cameraBtn');
+const fpsPill = document.getElementById('fpsPill');
 const statusEl = document.getElementById('status');
 const showLandmarks = document.getElementById('showLandmarks');
 const use3D = document.getElementById('use3D');
@@ -238,8 +245,7 @@ function setStatus(text, isError = false) {
 
 // Creates the FaceLandmarker on the requested hardware ("GPU" or "CPU").
 async function createLandmarker(delegate) {
-  const fileset = await FilesetResolver.forVisionTasks(WASM_URL);
-  return FaceLandmarker.createFromOptions(fileset, {
+  return FaceLandmarker.createFromOptions(WASM_FILESET, {
     baseOptions: { modelAssetPath: MODEL_URL, delegate },
     // VIDEO mode = frame-to-frame tracking: after the first detection it reuses
     // the previous frame's face position instead of re-running the detector,
@@ -317,11 +323,10 @@ async function startCamera() {
   video.srcObject = stream;
   await video.play();
 
-  // Match the stage to the camera's real aspect ratio (e.g. 16:9) so nothing is cropped.
-  stage.style.aspectRatio = `${video.videoWidth} / ${video.videoHeight}`;
   // Make the canvas's drawing resolution equal the video's pixel size. Then a
   // landmark at (x, y) in 0-1 coordinates is simply (x * width, y * height) on
-  // the canvas, and CSS stretches both layers identically on screen.
+  // the canvas. The stage is full-screen and all three layers use the same
+  // `object-fit: cover` crop (see style.css), so they stay aligned on screen.
   canvas.width = video.videoWidth;
   canvas.height = video.videoHeight;
   // Same for the 3D canvas, so 1 Three.js unit = 1 video pixel.
@@ -337,7 +342,9 @@ async function startCamera() {
   placeholder.hidden = true;
   cameraBtn.textContent = 'Stop camera';
   cameraBtn.disabled = false;
-  setStatus('Camera running');
+  setStatus('');
+  // CSS shows the live-only UI (frame tray, FPS pill, stop button) from this.
+  document.body.dataset.camera = 'on';
   recordBtn.disabled = false; // measuring needs a running camera
   startFrameLoop();
 }
@@ -429,7 +436,11 @@ function stopCamera() {
     recordStatus.textContent = 'Recording cancelled (camera stopped)';
   }
   recordBtn.disabled = true;
+  fpsPill.textContent = '–';
+  document.body.dataset.camera = 'off';
+  setFaceState(false);
   setStatus('');
+  cameraBtn.focus(); // the stop button just disappeared; put focus on the start button instead
 }
 
 // -----------------------------------------------------------------------------
@@ -479,6 +490,7 @@ function startFrameLoop() {
     //   z:    depth relative to the head's centre, roughly in the same units as x
     const face = result.faceLandmarks[0]; // undefined when no face is visible
     statFace.textContent = face ? 'yes' : 'no';
+    setFaceState(!!face);
 
     // Smoothed landmarks for placing the glasses (raw `face` is still used for
     // the debug dots, so you can see the raw jitter vs the steady glasses).
@@ -562,6 +574,7 @@ function startFrameLoop() {
     const elapsed = now - windowStart;
     if (elapsed >= 1000) {
       statFps.textContent = (frames * 1000 / elapsed).toFixed(1);
+      fpsPill.textContent = Math.round(frames * 1000 / elapsed); // compact copy for the top bar
       statInference.textContent = `${(inferenceTotal / frames).toFixed(1)} ms`;
       statRender.textContent = `${(renderTotal / frames).toFixed(1)} ms`;
       statLatency.textContent = latencyCount ? `${(latencyTotal / latencyCount).toFixed(1)} ms` : 'n/a';
@@ -698,18 +711,61 @@ function drawLandmarks(face) {
 // UI events
 // -----------------------------------------------------------------------------
 cameraBtn.addEventListener('click', () => (stream ? stopCamera() : startCamera()));
+// The top-bar stop button only exists while the camera runs.
+document.getElementById('stopBtn').addEventListener('click', stopCamera);
 
-// Glasses picker. Each button's data-id matches a key in GLASSES. One listener
-// on the container handles all buttons ("event delegation"). The next frame
-// drawn picks up the new selection automatically.
-document.getElementById('glassesList').addEventListener('click', (e) => {
-  const btn = e.target.closest('button');
-  if (!btn) return;
+// Glasses picker. Each button's data-id matches a key in GLASSES. The next
+// frame drawn picks up the new selection automatically.
+const glassesList = document.getElementById('glassesList');
+const glassesButtons = [...glassesList.querySelectorAll('button')];
+
+function selectGlasses(btn) {
   // aria-pressed tells screen readers (and our CSS) which button is active.
-  for (const b of e.currentTarget.children) b.setAttribute('aria-pressed', b === btn);
+  for (const b of glassesButtons) b.setAttribute('aria-pressed', b === btn);
+  // The tray's sliding highlight moves to this button's slot (CSS reads data-active).
+  glassesList.dataset.active = glassesButtons.indexOf(btn);
   selectedGlasses = btn.dataset.id;
   statGlasses.textContent = selectedGlasses;
   if (!use3D.disabled) setDesign(selectedGlasses); // show the matching 3D model
+}
+
+// One listener on the container handles all buttons ("event delegation").
+glassesList.addEventListener('click', (e) => {
+  const btn = e.target.closest('button');
+  if (btn) selectGlasses(btn);
+});
+
+// Face status in the top bar (green dot / "looking for your face" hint). Only
+// write to the DOM when it changes: this runs every frame, and touching a
+// body attribute makes the browser re-check styles for the whole page.
+let faceShown = false;
+function setFaceState(found) {
+  if (found === faceShown) return;
+  faceShown = found;
+  document.body.dataset.face = found ? 'yes' : 'no';
+}
+
+// Developer drawer: hidden by default so the try-on looks like a product, one
+// click (or the D key) away for the engineering tools. `inert` removes it from
+// keyboard focus and screen readers while it's closed.
+const devDrawer = document.getElementById('devDrawer');
+const devBtn = document.getElementById('devBtn');
+function setDrawer(open) {
+  devDrawer.toggleAttribute('data-open', open);
+  devDrawer.inert = !open;
+  devBtn.setAttribute('aria-expanded', open);
+  if (!open && devDrawer.contains(document.activeElement)) devBtn.focus();
+}
+devBtn.addEventListener('click', () => setDrawer(!devDrawer.hasAttribute('data-open')));
+document.getElementById('devClose').addEventListener('click', () => setDrawer(false));
+
+// Keyboard shortcuts: 1-3 pick glasses, D toggles the drawer, Escape closes it.
+// Ignored while typing in a field, so the Scenario box still accepts "d" and digits.
+document.addEventListener('keydown', (e) => {
+  if (e.target.closest('input, select, textarea') || e.ctrlKey || e.metaKey || e.altKey) return;
+  if (e.key === 'Escape') setDrawer(false);
+  else if (e.key === 'd' || e.key === 'D') setDrawer(!devDrawer.hasAttribute('data-open'));
+  else if (['1', '2', '3'].includes(e.key)) selectGlasses(glassesButtons[Number(e.key) - 1]);
 });
 
 // Measurement recording. Settings that affect performance are saved with the
