@@ -37,6 +37,10 @@ The whole thing runs client-side in the browser (JavaScript/TypeScript, Vite).
 
 *Alternative considered:* OpenCV `solvePnP` on a handful of landmarks. It works, but it's more code to get the same result. I'll mention it in the write-up as the fallback / "how it works underneath".
 
+*Changed during implementation:*
+- The transformation matrix is still requested but not used. The head pose is built from landmarks instead (see section 3).
+- Step 1 loaded MediaPipe's runtime and model from external servers (jsDelivr and Google) for speed of setup. Step 8 moved both into the app itself, so the deployed demo doesn't depend on anyone else's servers. The tracking behaviour is identical.
+
 ### 3. Placement: from landmarks to glasses transform
 
 - **Anchor:** nose-bridge landmark (between the eyes). This is where real glasses rest.
@@ -53,6 +57,12 @@ The whole thing runs client-side in the browser (JavaScript/TypeScript, Vite).
 - A cross product of the two gives "out of the face".
 
 It's rendered with an orthographic camera where 1 unit = 1 video pixel, so the glasses line up with the landmarks by construction, the same way the 2D version already fits. Trade-off: no perspective inside the glasses (the far arm isn't drawn slightly smaller), which is barely visible at webcam distance.
+
+*Other placement details settled during implementation:*
+- **Anchor:** the midpoint of the outer eye corners rather than landmark 168. Landmark 168 sits slightly above the eye line, toward the brow; the eye-corner midpoint lines the lenses up with the eyes.
+- **Scale:** the *3D* eye-corner distance (it includes depth), so the glasses no longer shrink when the head turns, as the 2D version did. It assumes an average 90 mm eye-corner distance, with lens centres at ±31.5 mm (a 63 mm pupil distance).
+- **Frame offset:** glasses sit 18 mm in front of the eye-corner plane.
+- **Pitch correction −2° and occluder height −12 mm:** calibrated by lining the virtual frames up against my real glasses on camera. Calibrated on one face only, so these should be re-checked on more people.
 
 ### 4. Smoothing: One Euro filter on the pose
 
@@ -73,6 +83,7 @@ Apply a One Euro filter to the position/rotation (or to the key landmarks) befor
   - If raw jitter is small even in dim light, turn smoothing **off by default** and keep the toggle.
   - Otherwise, try a higher `dCutoff` (so it reacts faster to the start of movement) or a higher min cutoff.
   - Either way, the write-up should explain the choice with the measured numbers.
+- **Resolved (step 7):** measured raw jitter was ~0.2–0.4 px even in dim light, so smoothing is now **off by default**, with the toggle kept. See Test results, finding 2.
 
 ### 5. Rendering: Three.js with 3D glasses models
 
@@ -85,12 +96,32 @@ Apply a One Euro filter to the position/rotation (or to the key landmarks) befor
 
 *Why 3D over a 2D PNG overlay:* a PNG is fine for a front view but goes flat and wrong as soon as the head turns. 3D plus an occluder handles yaw/pitch naturally. I'll build the PNG version first as a quick baseline, then replace it.
 
+*Changed during implementation:*
+- **Glasses models are built in code, not downloaded.** Each design is a lens outline from which the rims, lenses, bridge and arms are generated at real size in mm. That means no licences to track, no large downloads, and every dimension is explicit. The cost is simpler shapes than a professional model; swapping in `.glb` files later would only replace one function.
+- **The 2D version used SVG images instead of PNGs.** It's kept behind a "3D glasses" toggle as a baseline for comparison.
+- **Lenses use plain transparency, not transmission.** Transmission refracts the 3D scene behind it, but the background here is the HTML video, which isn't in the scene, so it would refract nothing.
+- **Occluder:** an ellipsoid head (75 × 120 × 95 mm half-sizes), centred ~100 mm behind the eye corners so it hides the arms without covering the bridge.
+- **Room-light matching (the stretch goal) was built in step 5.** About 7 times a second the video is shrunk to 64×48 pixels:
+  - Brightness and colour (assuming the scene averages to grey) come from the **whole frame**. Measuring the face would make glasses darker on darker skin, which is wrong and unfair.
+  - Light direction comes from the left/right halves of the **face**, where skin tone cancels out.
+  - The result dims, tints and moves the virtual light.
+- **The camera field-of-view point no longer applies,** because of the orthographic camera (section 3).
+
 ### 6. UI
 
 - Live video with the glasses on, a row of thumbnails to switch frames, and a toggleable stats overlay (FPS, inference ms).
 - A clear message when no face is detected or camera permission is denied.
 
 *Why:* the brief asks for "simple and user-friendly", so no extra features beyond switching glasses.
+
+*Changed during implementation (UI redesign after step 8):* the camera now fills the screen like a mirror, and every control floats over it as frosted glass.
+- **Frame tray:** at the bottom, with pictures of each frame and a highlight that slides to the selection. Keys 1–3 switch frames.
+- **Top bar:** an FPS pill whose dot turns green when a face is tracked, plus a stop button.
+- **Face hint:** "Looking for your face…" appears whenever no face is found.
+- **Start screen:** a card with a privacy note ("video never leaves your device").
+- **Developer tools are hidden by default** in a drawer that slides in from the right (button or the D key). It holds live stats, display toggles, fit and smoothing sliders, the measurement recorder and camera capabilities. The demo looks like a product, while the engineering stays one click away for the interview.
+- **Polish:** press feedback on every button, motion that stays interruptible, and support for reduced motion, reduced transparency and high contrast. Touch targets are at least 44 px, and controls stay clear of phone notches.
+- **Trade-off:** the full-screen view crops the camera image to fill the window instead of letterboxing it. The glasses stay aligned because all layers are cropped identically.
 
 ### 7. Performance measurement
 
@@ -101,6 +132,11 @@ Apply a One Euro filter to the position/rotation (or to the key landmarks) befor
 - Report results with the test conditions: laptop model, browser, resolution, lighting.
 
 *Why:* the brief says targets aren't pass/fail but results and conditions must be reported, so honest, reproducible numbers matter more than hitting them perfectly.
+
+*Implemented (step 7):*
+- **Live stats** in the developer drawer: FPS, inference, render, capture→render latency, jitter, lighting estimate.
+- **A Measure recorder:** you label a scenario and record 10/30/60 s. It downloads a CSV with one row per frame, plus the test conditions (browser, GPU, resolution, settings, camera capabilities) and a summary (mean/median/p95, face-loss %, jitter, head angles reached).
+- The slow-motion phone check is still to do.
 
 ### 8. Testing alignment and realism
 
@@ -119,21 +155,25 @@ Test head turns (yaw ±45°), nods, tilts, moving close to/far from the camera, 
 
 *Why this order:* each step gives something working and demoable, so if time runs out I still have a submission.
 
+*Progress:* steps 1–7 are done. Steps 3, 5 and 6 merged in practice: one 3D step built the models, the occluder, the materials and the three designs together. Step 8 is in progress: the README and `AI_PROMPTS.md` are written and the MediaPipe files are self-hosted. Still to do: deploying, and recording the video.
+
 ### 10. Submission checklist
 
-- [ ] GitHub repo with source
-- [ ] Live demo link
+- [x] GitHub repo with source
+- [ ] Live demo link (to deploy: Vercel or GitHub Pages)
 - [ ] 1–2 min demo video
-- [ ] README: approach, frameworks/models used, performance results + test conditions, known limitations
-- [ ] `AI_PROMPTS.md` with prompts used and credit for AI tools (Claude)
+- [x] README: approach, frameworks/models used, performance results + test conditions, known limitations
+- [x] `AI_PROMPTS.md` with prompts used and credit for AI tools (Claude)
 
 ### Expected limitations (to verify)
 
-- Accuracy drops at extreme head angles (MediaPipe loses landmarks past roughly profile view).
-- Low light means noisier landmarks and more jitter.
-- No real per-user face scale: glasses size is relative to face width, not measured in millimetres.
-- Lighting matching is approximate (no true light estimation).
-- Performance depends on GPU/WebGL support in the browser.
+*These were written before testing. What the tests showed is in brackets; full numbers are in Test results below.*
+
+- Accuracy drops at extreme head angles (MediaPipe loses landmarks past roughly profile view). *[Confirmed: tracking drops at ~63–77° yaw, or ~42–74° in dim light.]*
+- Low light means noisier landmarks and more jitter. *[Not confirmed: jitter stayed below half a pixel. Dim light's real effects are the camera dropping to 10 FPS and tracking failing at a distance.]*
+- No real per-user face scale: glasses size is relative to face width, not measured in millimetres. *[Still true: it assumes an average 90 mm eye-corner distance.]*
+- Lighting matching is approximate (no true light estimation). *[Still true: backlighting makes the glasses too bright, and there are no cast shadows.]*
+- Performance depends on GPU/WebGL support in the browser. *[Partly: with 4× CPU throttling, inference tripled to 37 ms and latency stayed mostly under 100 ms. The actual FPS limit was the webcam's auto-exposure, which I hadn't expected.]*
 
 
 
