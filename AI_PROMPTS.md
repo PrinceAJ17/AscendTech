@@ -5,6 +5,7 @@
 Below are all the prompts I sent, in order, in one continuous session. Notes in *[brackets]* add context:
 - *[reply button]* marks a reply I sent by clicking one of the assistant's suggested-reply buttons rather than typing it.
 - *[quoting: …]* marks a reply to a specific passage of the assistant's previous answer.
+- *[multiple choice]* marks a choice I picked when the assistant asked a question with set options.
 
 ## 1. Reviewing my approach
 
@@ -86,3 +87,16 @@ Below are all the prompts I sent, in order, in one continuous session. Notes in 
 ## 8. Submission (step 8)
 
 40. Let us move onto step 8
+
+## 9. UI redesign
+
+41. *[run through the `/apple-design` skill command]* I want to further refine this. I want to make the ui much more interactive and better to look at. Use the ui-ux-pro-max-skill as well as other UI/UX design skills that I have installed for you
+42. *[multiple choice]* Layout: **Full-screen camera** (camera fills the window, floating frosted-glass controls, frame picker tray at the bottom, slide-out drawer for developer tools). Developer tools: **Hidden by default** (a toggle reveals debug, stats and measurement).
+43. The new UI looks good in Chrome. Let's go back to deploying the live demo. *[reply button]*
+
+## 10. Deployment
+
+44. *[multiple choice]* Host for the live demo: **Vercel**.
+45. Let me make the github public then just for the time being
+46. Its public, let us move onto deployment
+47. ive committed it could you update the agentprompts.md file
