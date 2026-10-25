@@ -4,7 +4,7 @@ A browser app that lets you try on eyeglasses live on your webcam. It tracks you
 
 Built for the AscendTech AI Engineer Intern technical assessment, using **Option A (build from scratch)** with open-source frameworks.
 
-- **Live demo:** _TODO: add link after deploying_
+- **Live demo:** https://glasses-tryon-nine.vercel.app (allow camera access when asked; works best in Chrome or Edge)
 - **Demo video:** _TODO: add link_
 - **Full reasoning, decisions and test notes:** [ThoughtProcess.md](ThoughtProcess.md)
 - **AI tools and prompts used:** [AI_PROMPTS.md](AI_PROMPTS.md)
