@@ -1,3 +1,5 @@
+> **About this file.** This document started as my own handwritten notes: my first reading of the brief and the approach I thought would work. I then used Claude to critique those notes and kept modifying this file with it as I worked through the project: correcting my first draft, turning it into a plan, and recording every decision, bug and test result along the way. The Git history shows how it evolved, from my original notes (commits *"Initial thoughts"* and *"Reasoning for approach"*) through the review (*"Changed up the approach after review"*) to the later updates.
+
 This will be a document/text file covering my thought process throughout the whole assignment.
 
 
@@ -18,6 +20,11 @@ My first pass got a few things wrong, so before planning I'm noting them:
 - **Jitter isn't mainly a CPU problem.** It comes from per-frame predictions with no temporal smoothing.
 - **I had the difficulty backwards.** Detection is a solved problem. Fitting and rendering the glasses realistically is the real work.
 
+*Key terms:*
+- A **landmark** is a specific, numbered point on the face (an eye corner, the tip of the nose, the chin) with its x/y/z position in the image.
+- An **embedding** is a list of numbers summarising *what* something is, used to compare faces (is this the same person?). It says nothing about where things are.
+- **Jitter** is the small frame-to-frame wobble of a tracked position when the head is actually still.
+
 
 
 ## Plan: Option A
@@ -28,6 +35,11 @@ The whole thing runs client-side in the browser (JavaScript/TypeScript, Vite).
 
 *Why:* no server round-trip per frame, which is the single biggest win for the <100 ms latency target. It also gives me a free "working demo link" (static hosting on Vercel/GitHub Pages) and works on any laptop with a webcam. A Python + OpenCV desktop app would be easier to prototype but harder to share and to render realistically.
 
+*In plain terms:*
+- **Client-side** means all the work happens on the user's own computer, inside the browser.
+- A **server round-trip** would mean compressing each frame, uploading it, waiting for a server to process it and downloading the result. The network alone can eat most of a 100 ms budget, and the delay varies from frame to frame.
+- **Vite** is the tool that runs the local development server and bundles the code into a static site for hosting.
+
 ### 2. Face tracking: MediaPipe Face Landmarker (`@mediapipe/tasks-vision`)
 
 - Running mode `VIDEO`, GPU delegate, `outputFacialTransformationMatrixes: true`.
@@ -36,6 +48,13 @@ The whole thing runs client-side in the browser (JavaScript/TypeScript, Vite).
 *Why:* it's built for exactly this (real-time, on-device, runs at 30+ FPS on ordinary laptops) and is explicitly allowed in the brief. The transformation matrix gives me full 3D head pose (position, roll, pitch, yaw) without writing my own `solvePnP`. That pose is what lets glasses stay aligned when the head turns.
 
 *Alternative considered:* OpenCV `solvePnP` on a handful of landmarks. It works, but it's more code to get the same result. I'll mention it in the write-up as the fallback / "how it works underneath".
+
+*In plain terms:*
+- **MediaPipe** is Google's open-source library of ready-made, on-device machine-learning models. **Face Landmarker** first finds the face with a small detector (BlazeFace), then predicts 478 landmarks on it.
+- **`VIDEO` mode** makes it *track*: after the first frame it reuses the previous face position instead of re-running the detector, which is much faster.
+- The **GPU delegate** runs the model on the graphics card, falling back to the CPU if needed.
+- **Head pose** is the head's position plus its three rotations: **yaw** (turning left/right), **pitch** (nodding up/down) and **roll** (tilting ear to shoulder).
+- **solvePnP** ("Perspective-n-Point") works out that pose by fitting a generic 3D face model to where its points appear in the 2D image.
 
 *Changed during implementation:*
 - The transformation matrix is still requested but not used. The head pose is built from landmarks instead (see section 3).
@@ -58,6 +77,10 @@ The whole thing runs client-side in the browser (JavaScript/TypeScript, Vite).
 
 It's rendered with an orthographic camera where 1 unit = 1 video pixel, so the glasses line up with the landmarks by construction, the same way the 2D version already fits. Trade-off: no perspective inside the glasses (the far arm isn't drawn slightly smaller), which is barely visible at webcam distance.
 
+*In plain terms:*
+- The **cross product** of two directions gives a third direction at right angles to both. Left-right × up = straight out of the face, which completes the head's three axes.
+- A **perspective camera** draws distant things smaller, like a real camera. An **orthographic camera** draws everything at the same scale regardless of distance, so a point in the 3D scene lands exactly on the matching pixel of the video.
+
 *Other placement details settled during implementation:*
 - **Anchor:** the midpoint of the outer eye corners rather than landmark 168. Landmark 168 sits slightly above the eye line, toward the brow; the eye-corner midpoint lines the lenses up with the eyes.
 - **Scale:** the *3D* eye-corner distance (it includes depth), so the glasses no longer shrink when the head turns, as the 2D version did. It assumes an average 90 mm eye-corner distance, with lens centres at ±31.5 mm (a 63 mm pupil distance).
@@ -69,6 +92,12 @@ It's rendered with an orthographic camera where 1 unit = 1 video pixel, so the g
 Apply a One Euro filter to the position/rotation (or to the key landmarks) before rendering.
 
 *Why:* raw per-frame predictions jitter. A plain moving average removes jitter but adds lag. The One Euro filter smooths heavily when the head is still and lightly when it moves fast, so it fixes jitter without hurting responsiveness. It's a standard choice for AR tracking.
+
+*How it works:* each new value is blended with the previous smoothed value. How much of the new value to take depends on a **cutoff frequency**:
+- **Min cutoff (Hz)** sets the smoothing when still. Lower means steadier but laggier.
+- **Beta** raises the cutoff as the head speeds up, so fast movement is smoothed less and doesn't trail behind.
+- **dCutoff** smooths the speed estimate itself, so jitter isn't mistaken for movement.
+- *Why not a Kalman filter:* a Kalman filter needs a motion model and noise settings that are hard to tune, and it overshoots when a head stops suddenly. One Euro has two intuitive knobs.
 
 *Note from testing (steps 4–5): smoothing may be doing more harm than good.*
 
@@ -95,6 +124,13 @@ Apply a One Euro filter to the position/rotation (or to the key landmarks) befor
 - Camera field of view matched to MediaPipe's assumed perspective camera so the overlay lines up.
 
 *Why 3D over a 2D PNG overlay:* a PNG is fine for a front view but goes flat and wrong as soon as the head turns. 3D plus an occluder handles yaw/pitch naturally. I'll build the PNG version first as a quick baseline, then replace it.
+
+*In plain terms:*
+- **Three.js** is a JavaScript library that draws 3D scenes in the browser using the GPU (through WebGL).
+- **Occluder / depth buffer:** for every pixel the GPU remembers how close the nearest drawn surface is, and only draws something new there if it's closer. An occluder is drawn invisibly (depth only, no colour), so anything behind it fails that test and disappears, letting the real head in the video show through.
+- **PBR (physically based rendering)** materials react to light like real ones (metal, glossy plastic, glass).
+- An **environment map** is a picture of a surrounding "room" that shiny surfaces reflect. **PMREM** pre-blurs it, so rough surfaces get soft reflections and polished ones get sharp reflections.
+- **Transmission** simulates light passing *through* glass and bending; plain **transparency** just lets the background show through at a set strength.
 
 *Changed during implementation:*
 - **Glasses models are built in code, not downloaded.** Each design is a lens outline from which the rims, lenses, bridge and arms are generated at real size in mm. That means no licences to track, no large downloads, and every dimension is explicit. The cost is simpler shapes than a professional model; swapping in `.glb` files later would only replace one function.
@@ -137,6 +173,11 @@ Apply a One Euro filter to the position/rotation (or to the key landmarks) befor
 - **Polish:** press feedback on every button, motion that stays interruptible, and support for reduced motion, reduced transparency and high contrast. Touch targets are at least 44 px, and controls stay clear of phone notches.
 - **Trade-off:** the full-screen view crops the camera image to fill the window instead of letterboxing it. The glasses stay aligned because all layers are cropped identically.
 
+*In plain terms:*
+- **Frosted glass** is a CSS `backdrop-filter` blur: the controls blur whatever is behind them, so they stay readable over the moving video without hiding it.
+- **Reduced motion, reduced transparency and high contrast** are operating-system accessibility settings. The page reads them and swaps slides for fades, glass for solid panels, and adds stronger edges.
+- **Letterboxing** means adding black bars to fit the whole image; **cropping** fills the screen by trimming the edges instead.
+
 ### 7. Performance measurement
 
 - **FPS:** frames rendered per second, averaged over a rolling window.
@@ -147,6 +188,13 @@ Apply a One Euro filter to the position/rotation (or to the key landmarks) befor
 
 *Why:* the brief says targets aren't pass/fail but results and conditions must be reported, so honest, reproducible numbers matter more than hitting them perfectly.
 
+*In plain terms:*
+- **FPS** measures *smoothness*: how many new frames appear per second.
+- **Latency** measures *delay*: how long after you move the glasses move on screen. A video can be smooth but delayed, or quick but choppy, so they're measured separately.
+- **Inference** is the time the face model takes on one frame.
+- **Mean / median / p95:** the average; the typical frame (half faster, half slower); and the value 95% of frames beat. p95 shows the occasional slow frames that users notice as stutter.
+- **`requestVideoFrameCallback`** is a browser feature that runs our code once for every new camera frame, and reports when that frame was captured.
+
 *Implemented (step 7):*
 - **Live stats** in the developer drawer: FPS, inference, render, capture→render latency, jitter, lighting estimate.
 - **A Measure recorder:** you label a scenario and record 10/30/60 s. It downloads a CSV with one row per frame, plus the test conditions (browser, GPU, resolution, settings, camera capabilities) and a summary (mean/median/p95, face-loss %, jitter, head angles reached).
@@ -155,6 +203,12 @@ Apply a One Euro filter to the position/rotation (or to the key landmarks) befor
 ### 8. Testing alignment and realism
 
 Test head turns (yaw ±45°), nods, tilts, moving close to/far from the camera, glasses-wearers, and bright, dim and backlit rooms. Record where it breaks. Those go straight into "known limitations".
+
+*Why these tests:* each one targets a different way tracking fails:
+- **Turns:** the face becomes a side profile, and landmarks on the far side get hidden.
+- **Distance:** the face becomes too few pixels to read reliably.
+- **Dim light:** the webcam image gets noisy and its frame rate drops.
+- **Backlighting:** the face is dark against a bright background.
 
 ### 9. Build order
 
@@ -169,13 +223,13 @@ Test head turns (yaw ±45°), nods, tilts, moving close to/far from the camera, 
 
 *Why this order:* each step gives something working and demoable, so if time runs out I still have a submission.
 
-*Progress:* steps 1–7 are done. Steps 3, 5 and 6 merged in practice: one 3D step built the models, the occluder, the materials and the three designs together. Step 8 is in progress: the README and `AI_PROMPTS.md` are written and the MediaPipe files are self-hosted. Still to do: deploying, and recording the video.
+*Progress:* all eight steps are done. Steps 3, 5 and 6 merged in practice: one 3D step built the models, the occluder, the materials and the three designs together. Step 8 covered the README, `AI_PROMPTS.md`, self-hosting the MediaPipe files, deploying to Vercel and recording the demo video.
 
 ### 10. Submission checklist
 
 - [x] GitHub repo with source
-- [ ] Live demo link (to deploy: Vercel or GitHub Pages)
-- [ ] 1–2 min demo video
+- [x] Live demo link (deployed on Vercel; link in the README)
+- [x] Demo video (YouTube link in the README)
 - [x] README: approach, frameworks/models used, performance results + test conditions, known limitations
 - [x] `AI_PROMPTS.md` with prompts used and credit for AI tools (Claude)
 
@@ -194,6 +248,11 @@ Test head turns (yaw ±45°), nods, tilts, moving close to/far from the camera, 
 ## Test results (step 7)
 
 13 recordings made with the in-app Measure panel (CSVs, one row per frame). Unless stated otherwise: 3D mode, round glasses, Match room lighting on, smoothing 3 Hz / beta 30.
+
+*How to read the numbers:*
+- **Processed FPS** is frames our code handled; **camera FPS** is frames the webcam delivered. If processed is lower, our code was skipping frames.
+- **Capture→render** runs from the camera's capture timestamp to the end of our drawing.
+- **Face loss %** is the share of frames where no face was found.
 
 **Test machine:** Chrome 155 on Windows 11, NVIDIA RTX 5090 Laptop GPU, 24 CPU threads, webcam at 1280×720, MediaPipe on GPU. This is a very powerful machine, so these are best-case numbers.
 
@@ -255,7 +314,7 @@ Test head turns (yaw ±45°), nods, tilts, moving close to/far from the camera, 
      - *If that becomes a problem:* delete `resetCameraSettings()`, its call in `startCamera()`, and the `midpoint()` helper. Don't just comment out the function: the call would then fail and the camera wouldn't start.
    - **Conclusion for the write-up:** the pipeline needs ~12–15 ms per frame (capacity for 30+ FPS), but on this webcam the browser can't get 30 FPS *with a usable image*. Auto exposure caps delivery at 20 FPS indoors and 10 FPS in dim light, and is documented as a hardware limit.
 
-2. **Smoothing isn't needed on this setup.** The summary's 30 s "jitter" number (~1.8 px either way) is dominated by slow body sway, so I recomputed true frame-to-frame jitter from the per-frame rows:
+2. **Smoothing isn't needed on this setup.** The summary's 30 s "jitter" number (~1.8 px either way) is dominated by slow body sway, so I recomputed true frame-to-frame jitter from the per-frame rows. *(Method: for every three consecutive frames, I measured how far the middle position deviates from a straight line between its neighbours. Steady motion and slow drift cancel out, leaving only the rapid wobble.)*
 
    | Hold-still run | Raw | Smoothed |
    |---|---|---|
@@ -274,13 +333,13 @@ Test head turns (yaw ±45°), nods, tilts, moving close to/far from the camera, 
    - **Distance, dim light:** 74–80% face loss. It only held when close (face over ~226 px wide in the smoothing-off run).
    - **Pitch at rest** reads −2° to −5°: the known forehead-slope offset, not an error.
 
-4. **Weaker hardware (Chrome DevTools 4× CPU throttle):**
+4. **Weaker hardware (Chrome DevTools 4× CPU throttle):** *(CPU throttling is a Chrome developer-tools setting that slows the page's processor work by a chosen factor, a quick way to simulate a cheaper laptop. It doesn't slow the GPU.)*
    - Inference 12 → 37 ms. Processed FPS 18.3 vs the camera's 19.9, so it started skipping frames.
    - Latency median 50 ms, p95 84 ms, worst 106 ms: still mostly under 100 ms, with little margin.
    - Inference slows even in GPU mode because MediaPipe does much of its pre/post-processing on the CPU.
 
 5. **Unexpected cost: lighting estimation.**
-   - Render time is ~0.2 ms on most frames but spikes to ~10 ms on ~28% of frames. That matches the lighting estimate's ~7 updates per second: reading pixels back from the video stalls the GPU.
+   - Render time is ~0.2 ms on most frames but spikes to ~10 ms on ~28% of frames. That matches the lighting estimate's ~7 updates per second: reading pixels back from the video stalls the GPU. *(The GPU normally works in parallel with the page's code. Asking for its pixels forces the page to wait until the GPU has finished everything queued before it.)*
    - **Confirmed** with a second 30 s hold-still run (normal light, same smoothing and resolution) with Match room lighting off:
 
      | | Lighting on | Lighting off |
