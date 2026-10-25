@@ -101,7 +101,7 @@ Measured with the in-app recorder (30 s runs unless noted; full data and analysi
 
 ## Known limitations
 
-- **Frame rate:** below the 24 FPS target on this webcam (20 FPS indoors, 10 in dim light) because of its auto-exposure. See above.
+- **Frame rate:** can't consistently reach above 24 fps in dim lighting. See above.
 - **Dim light:** tracking at a distance fails (74–80% face loss). It holds up close.
 - **Extreme head angles:** tracking drops beyond roughly 60–75° of yaw, less consistently in dim light.
 - **One average head:**
