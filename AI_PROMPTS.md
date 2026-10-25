@@ -100,3 +100,11 @@ Below are all the prompts I sent, in order, in one continuous session. Notes in 
 45. Let me make the github public then just for the time being
 46. Its public, let us move onto deployment
 47. ive committed it could you update the agentprompts.md file
+
+## 11. Demo video review and rendering fixes
+
+*Prompts 48–50 are lightly edited for clarity and spelling; their meaning is unchanged.*
+
+48. *[quoting: "An invisible head shape hides the arms when they go behind my head."]* It doesn't actually hide the arms very well. *[attached a screenshot where the far arm shows through the far lens]*
+49. *[attached my demo recording, "Glasses Try-On - Google Chrome 2026-10-25 07-46-45.mp4"]* Please use a transcription tool to check that everything I say in this video is accurate, and analyse the frames themselves to confirm the glasses aren't dragging too much as I move.
+50. *[attached a second recording, "Glasses Try-On - Google Chrome 2026-10-25 08-01-07.mp4"]* Please review this take as well.

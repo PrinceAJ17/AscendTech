@@ -90,11 +90,16 @@ export function initGlasses3D(canvas) {
   const pmrem = new THREE.PMREMGenerator(renderer);
   scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
   pmrem.dispose();
+  // Turn the reflection room around. Unrotated, one of its bright light panels
+  // sits almost directly behind the camera, so any flat face pointing at the
+  // camera (rim fronts, lenses) mirrored it and flashed white when the head
+  // tilted ~15° down. Turned 180°, that direction reflects a plain wall.
+  scene.environmentRotation.set(0, Math.PI, 0);
 
   // One soft light from above-front, like a ceiling light, for a highlight on
   // top of the frame. setLighting() moves, dims and tints it to match the room.
   keyLight = new THREE.DirectionalLight(0xffffff, KEY_LIGHT_INTENSITY);
-  keyLight.position.set(0, 1, 1);
+  keyLight.position.set(0, 2, 1); // same as setLighting's neutral position
   keyLight.layers.enableAll(); // lights only count on layers they belong to; light both passes
   scene.add(keyLight);
 
@@ -161,9 +166,14 @@ export function setLighting(est) {
   keyLight.color.setRGB(e.tint.r, e.tint.g, e.tint.b);
   // A directional light shines from its position toward the origin. x: left/
   // right of the face (×2 to exaggerate a little, since the measured difference
-  // is subtle). y: stays mostly overhead, nudged by top/bottom brightness.
-  // z: always in front, since a light behind the head wouldn't light the frame front.
-  keyLight.position.set(e.dirX * 2, 1 + e.dirY, 1);
+  // is subtle). z: always in front, since a light behind the head wouldn't
+  // light the frame front.
+  // y: always well overhead (1.5-2.5), only nudged by top/bottom brightness.
+  // It used to range 0-2, and at 0 the light sat right behind the camera: the
+  // flat lens and rim faces then mirrored it straight back, flashing white as
+  // the head tilted. At y ≥ 1.5 the head would have to tip ~28° for a flat
+  // face to catch the light like a mirror.
+  keyLight.position.set(e.dirX * 2, 2 + 0.5 * e.dirY, 1);
 }
 
 // Debug sliders for tuning the head fit (see pitchCorrection and buildOccluder).
@@ -442,14 +452,17 @@ function metalMaterial(color) {
 // transmission refracts what's behind it in the 3D scene, but our background is
 // the HTML video, which isn't in the scene, so it would refract nothing.
 // depthWrite: false stops a lens from hiding the arm or other lens behind it.
+// specularIntensity 0.3: a flat lens facing a light mirrors it over its whole
+// surface, which flashed the lenses white; this keeps a soft glare instead
+// (lenses are anti-reflective coated in real life anyway).
 function clearLensMaterial() {
   return new THREE.MeshPhysicalMaterial({
-    color: 0xddeeff, transparent: true, opacity: 0.12, roughness: 0.05, depthWrite: false,
+    color: 0xddeeff, transparent: true, opacity: 0.12, roughness: 0.05, specularIntensity: 0.3, depthWrite: false,
   });
 }
 function tintedLensMaterial() {
   return new THREE.MeshPhysicalMaterial({
-    color: 0x3c2814, transparent: true, opacity: 0.6, roughness: 0.05, depthWrite: false,
+    color: 0x3c2814, transparent: true, opacity: 0.6, roughness: 0.05, specularIntensity: 0.3, depthWrite: false,
   });
 }
 
@@ -474,8 +487,18 @@ function buildGlasses(outline, frameMat, lensMat, { thin = false } = {}) {
     const outer = growOutline(pts, rim);
     const rimShape = new THREE.Shape(outer);
     rimShape.holes.push(new THREE.Path(pts));
-    const rimGeo = new THREE.ExtrudeGeometry(rimShape, { depth, bevelEnabled: false });
-    rimGeo.translate(0, 0, -depth / 2); // centre the thickness on z = 0
+    // Rounded (bevelled) edges, like a real moulded rim. With perfectly flat
+    // faces, a light near the camera lit a whole face at once, like a mirror,
+    // so the frames flashed white when the head tilted; curved edges only
+    // catch thin highlight lines. bevelOffset = -bevelSize keeps the rim's
+    // outline the same size, and the core depth shrinks so total thickness stays `depth`.
+    const bevelThickness = depth * 0.35;
+    const bevelSize = rim * 0.4;
+    const core = depth - 2 * bevelThickness;
+    const rimGeo = new THREE.ExtrudeGeometry(rimShape, {
+      depth: core, bevelEnabled: true, bevelThickness, bevelSize, bevelOffset: -bevelSize, bevelSegments: 3,
+    });
+    rimGeo.translate(0, 0, -core / 2); // centre the thickness on z = 0
     const rimMesh = new THREE.Mesh(rimGeo, frameMat);
     rimMesh.position.x = side * LENS_OFFSET_MM;
     group.add(rimMesh);

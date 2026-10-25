@@ -110,6 +110,16 @@ Apply a One Euro filter to the position/rotation (or to the key landmarks) befor
   - Light direction comes from the left/right halves of the **face**, where skin tone cancels out.
   - The result dims, tints and moves the virtual light.
 - **The camera field-of-view point no longer applies,** because of the orthographic camera (section 3).
+- **Bug found in demo recordings: frames flashing white.** The round rims turned grey-white, and the aviator lenses and rims white, for a moment whenever my head tilted. That's visible in several takes.
+  - **Diagnosis:** I re-rendered my face from the recordings while simulating head tilts. Gold *tubes* (arms, bridge) stayed gold while the flat gold *rim fronts* in the same material went white, so the cause was what flat camera-facing surfaces reflect. Two sources:
+    - **The reflection room:** the generated room used for reflections has a very bright light panel almost directly behind the camera. A ~15° downward head tilt lined the flat faces up with it like mirrors.
+    - **The key light:** when the lighting estimate said "light from straight ahead", it moved the light right behind the camera, causing the same mirror flash.
+  - **Fixes:**
+    - The reflection room is rotated 180°, so behind the camera is now a plain wall. This is the main fix.
+    - The key light always stays well overhead.
+    - Rim edges are rounded (bevelled) like real moulded frames, so they catch thin highlight lines instead of lighting up a whole flat face.
+    - Lens reflectivity is reduced, like an anti-reflective coating.
+  - **Verified:** all three designs at simulated tilts from −25° to +15° with the worst-case light direction: no white flashes.
 
 ### 6. UI
 
